@@ -1,0 +1,20 @@
+# Claude Code worktrees / 세션 (상위 레포 얽힘 방지 — 필수)
+.claude/
+
+# 공통
+**/__pycache__/
+**/*.py[cod]
+**/*.log
+**/*.pid
+**/*.db
+**/*.sqlite
+.env
+.env.*
+**/venv/
+**/.venv/
+node_modules/
+dist/
+build/
+.idea/
+.vscode/
+.DS_Store
