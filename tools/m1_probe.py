@@ -87,7 +87,7 @@ def probe(board, diagnose=False):
         return verdict
 
     html = http_get(rows[0]["url"])
-    detail = parse_detail(html)
+    detail = parse_detail(html, rows[0]["url"])
     chars = len(detail["body"])
 
     # A2 asks whether the parser finds the right node. A body that is short

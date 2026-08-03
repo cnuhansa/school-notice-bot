@@ -10,7 +10,28 @@ import os
 # ─────────────────────────────────────────────────────────────
 
 DB_PATH = os.environ.get("CUK_DB", "cuk_notices.db")
+CACHE_DIR = os.environ.get("CUK_CACHE", ".cache")
 MODEL = os.environ.get("CUK_MODEL", "claude-sonnet-5")
+
+# ─────────────────────────────────────────────────────────────
+# Content resolution (see cuk_bot/content.py, docs/M1_RESULT.md)
+# ─────────────────────────────────────────────────────────────
+
+# Below this the resolver looks for a richer source (pdf, screenshots).
+MIN_USABLE_CHARS = 300
+
+# ...but a short body is still a body. Text this long is kept and read
+# normally when no richer source exists; only below it is a notice treated as
+# title-only, which caps how confident the extractor is allowed to be.
+THIN_TEXT_FLOOR = 60
+
+# Dorm notices run up to 20 screenshots. The deadline lives in the opening
+# pages; the rest are forms and floor plans. Capping is logged, never silent.
+MAX_IMAGES_PER_NOTICE = int(os.environ.get("CUK_MAX_IMAGES", "5"))
+
+# Reading /_attach/ images is a client-approved exception to robots.txt
+# (2026-08-03). Set to 0 to fall back to title-only alerts.
+READ_IMAGES = os.environ.get("CUK_READ_IMAGES", "1") != "0"
 
 # ─────────────────────────────────────────────────────────────
 # HTTP politeness (HANDOFF 11.5)

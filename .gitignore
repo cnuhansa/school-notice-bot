@@ -1,6 +1,9 @@
 # Claude Code worktrees / 세션 (상위 레포 얽힘 방지 — 필수)
 .claude/
 
+# 다운로드 캐시 (학교 서버 재요청 방지용 로컬 사본)
+.cache/
+
 # 공통
 **/__pycache__/
 **/*.py[cod]

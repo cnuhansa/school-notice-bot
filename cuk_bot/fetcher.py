@@ -35,5 +35,19 @@ def http_get(url: str) -> str:
     return resp.text
 
 
+def http_get_bytes(url: str) -> bytes:
+    """GET `url` as raw bytes, under the same global rate limit as http_get."""
+    global _last_request_at
+
+    wait = REQUEST_DELAY - (time.monotonic() - _last_request_at)
+    if wait > 0:
+        time.sleep(wait)
+
+    resp = _session.get(url, timeout=REQUEST_TIMEOUT)
+    _last_request_at = time.monotonic()
+    resp.raise_for_status()
+    return resp.content
+
+
 def list_url(board: dict, limit: int = 10, offset: int = 0) -> str:
     return f"{board['url']}?mode=list&articleLimit={limit}&article.offset={offset}"

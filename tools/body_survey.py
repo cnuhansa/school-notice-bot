@@ -30,7 +30,7 @@ def survey_board(board, per_board):
     results = []
     for row in sample:
         try:
-            detail = parse_detail(http_get(row["url"]))
+            detail = parse_detail(http_get(row["url"]), row["url"])
         except Exception as exc:
             print(f"  [!] {row['article_no']} fetch failed: {exc}")
             continue
