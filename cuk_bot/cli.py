@@ -146,7 +146,16 @@ def cmd_digest(con, notify=True, log=print):
     text = notifier.format_digest(notices, reminders) or notifier.format_alive(
         len(BOARDS_BY_ID) - len(health.failing_boards(con)), len(BOARDS_BY_ID))
 
-    if not notify or notifier.send_or_queue(con, text, "digest", log=log):
+    # A preview must not consume the queue. Clearing pending_digest and
+    # marking reminders sent without delivering anything would drop the day's
+    # digest and stop those D-day reminders from ever firing.
+    if not notify:
+        log(text)
+        log(f"[미리보기] 공지 {len(notices)}건, 리마인더 {len(reminders)}건 "
+            f"— 발송하지 않았고 대기열도 그대로입니다")
+        return
+
+    if notifier.send_or_queue(con, text, "digest", log=log):
         con.execute("DELETE FROM pending_digest")
         for row in reminders:
             notifier.mark_reminder_sent(con, row)

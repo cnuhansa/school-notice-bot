@@ -9,7 +9,8 @@ from unittest import mock
 
 import support  # noqa: F401
 
-from cuk_bot import collector, db, health, notifier  # noqa: E402
+from cuk_bot import cli, collector, db, health, notifier  # noqa: E402
+from support import days_out  # noqa: E402
 
 LISTING = ('<table><tr><td><a href="?mode=view&articleNo=1">모집 공고</a></td>'
            '<td>2026.07.31</td></tr></table>')
@@ -130,6 +131,59 @@ class OutboxRetry(unittest.TestCase):
 
         body = self.con.execute("SELECT body FROM outbox").fetchone()["body"]
         self.assertEqual(body, "잃으면 안 되는 알림")
+
+
+class DigestPreview(unittest.TestCase):
+    """--no-notify must be read-only.
+
+    The first version cleared pending_digest and marked reminders sent even
+    when nothing was delivered, so previewing the digest silently threw away
+    the day's notices and stopped those D-day reminders from ever firing.
+    """
+
+    def setUp(self):
+        self.con = db.connect(":memory:")
+        self.con.execute("INSERT INTO notices (board_id, article_no, title, url)"
+                         " VALUES ('b','1','공지','http://x')")
+        self.con.execute("INSERT INTO extractions (board_id, article_no, "
+                         "one_line, apply_end) VALUES ('b','1','한 줄', ?)",
+                         (days_out(1),))
+        db.queue_digest(self.con, "b", "1")
+        notifier.schedule_reminders(self.con, "b", "1", days_out(1))
+        self.con.commit()
+
+    def pending(self):
+        return self.con.execute(
+            "SELECT COUNT(*) FROM pending_digest").fetchone()[0]
+
+    def unsent_reminders(self):
+        return self.con.execute(
+            "SELECT COUNT(*) FROM reminders WHERE sent_at IS NULL").fetchone()[0]
+
+    def test_preview_leaves_the_queue_intact(self):
+        cli.cmd_digest(self.con, notify=False, log=lambda _: None)
+
+        self.assertEqual(self.pending(), 1)
+        self.assertEqual(self.unsent_reminders(), 1)
+
+    def test_preview_sends_nothing(self):
+        with mock.patch.object(notifier, "send") as sent:
+            cli.cmd_digest(self.con, notify=False, log=lambda _: None)
+        sent.assert_not_called()
+
+    def test_real_run_consumes_the_queue(self):
+        with mock.patch.object(notifier, "send", return_value=True):
+            cli.cmd_digest(self.con, notify=True, log=lambda _: None)
+
+        self.assertEqual(self.pending(), 0)
+        self.assertEqual(self.unsent_reminders(), 0)
+
+    def test_failed_send_keeps_the_queue_for_the_next_run(self):
+        with mock.patch.object(notifier, "send", return_value=False):
+            cli.cmd_digest(self.con, notify=True, log=lambda _: None)
+
+        self.assertEqual(self.pending(), 1, "발송 실패인데 대기열이 비워짐")
+        self.assertEqual(self.unsent_reminders(), 1)
 
 
 class SchemaMigration(unittest.TestCase):
