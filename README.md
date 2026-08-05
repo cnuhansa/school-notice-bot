@@ -2,7 +2,7 @@
 
 성심교정 공지·기숙사·학과 게시판 8곳을 모아 **"기한 내에 무언가 해야 하는 공지"만** 골라 마감일 기준으로 알린다.
 
-기숙사 공지는 본교 공지사항에 전혀 올라오지 않고 `dorm.catholic.ac.kr`의 별도 게시판 4개로 쪼개져 있다. 본교 공지만 성실히 봐도 입사 모집 공고를 100% 놓치는 구조라서 만들어졌다.
+기숙사 공지는 `dorm.catholic.ac.kr`의 별도 게시판 4개로 쪼개져 있고, 본교 공지에는 일부만 재게시된다(→ [docs/M1_RESULT.md](docs/M1_RESULT.md) §5). 본교 공지만 봐서는 입사 모집 공고를 놓치기 쉬운 구조라서 만들어졌다.
 
 **이 봇의 목적은 공지를 모아 보여주는 게 아니라 마감일을 놓치지 않게 하는 것이다.** 전부 밀어넣으면 알림 피로로 뮤트된다.
 
@@ -11,7 +11,7 @@
 | 마일스톤 | 상태 |
 |---|---|
 | M1 파싱 검증 | ✅ 파서 PASS / ⚠️ 콘텐츠 이슈 → [docs/M1_RESULT.md](docs/M1_RESULT.md) |
-| M2 추출 검증 | 🔨 코드 완료, 표본 검수 미실행 (Gemini 키 대기) |
+| M2 추출 검증 | 🔨 부분 검수 (18건 추출, 이미지 판독 1건 원문 대조 통과) — 30건 미달 |
 | M3 알림 | 🔨 코드 완료, 실발송 미검증 (텔레그램 토큰 대기) |
 | M4 운영 | ⬜ 미착수 |
 
@@ -26,13 +26,14 @@ cuk_bot/
   parser.py     목록·상세 파서 (div.b-content-box 확정)
   content.py    본문 → PDF → 스크린샷 → 제목 순 에스컬레이션
   extractor.py  Gemini 호출, 마감일 구조화 추출
-  quota.py      무료 한도 예산 관리, 소진 감지
+  quota.py      무료 한도 예산 관리, 429 분류(일일 vs 분당)
+  judge.py      모델 체인 — 한도 소진 시 다음 모델로 승계
   collector.py  게시판 순회, 새 글만 상세 진입
   notifier.py   텔레그램 발송, D-day, 리마인더 예약
   cli.py        커맨드
 docs/           핸드오프 명세, M1 판정 결과
 tools/          M1·M2 검증 하네스
-tests/          리마인더·이스케이프·파싱 단위 테스트
+tests/          리마인더·한도·모델체인·파싱 단위 테스트
 reference/      원본 스켈레톤 (실행 금지, 참고용)
 ```
 
@@ -50,13 +51,14 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | @BotFather 발급 |
 | `TELEGRAM_CHAT_ID` | ✅ | — | 수신자 chat id |
 | `CUK_DB` | | `cuk_notices.db` | SQLite 경로 |
-| `CUK_MODEL` | | `gemini-2.5-flash` | 모델명 |
-| `CUK_GEMINI_RPD` | | `180` | 일일 요청 상한 (로컬 가드) |
-| `CUK_GEMINI_RPM` | | `10` | 분당 요청 상한 (로컬 가드) |
+| `CUK_MODEL` | | `gemini-2.5-flash-lite` | 1순위 모델 |
+| `CUK_MODEL_CHAIN` | | flash-lite→flash→2.0 계열 | 한도 소진 시 넘어갈 모델 순서 |
+| `CUK_GEMINI_RPD` | | `180` | 일일 상한 초기 추정값 (API가 알려주면 교체됨) |
+| `CUK_GEMINI_RPM` | | `3` | 분당 상한 (로컬 가드) |
 | `CUK_NOTIFY_UNJUDGED` | | `1` | `0`이면 판정 불가 시 알림도 안 함 |
 | `CUK_CACHE` | | `.cache` | 다운로드 캐시 |
 | `CUK_CONTACT_EMAIL` | | — | User-Agent에 남길 연락처 |
-| `CUK_MAX_IMAGES` | | `5` | 공지당 판독할 이미지 수 |
+| `CUK_MAX_IMAGES` | | `3` | 공지당 판독할 이미지 수 |
 | `CUK_READ_IMAGES` | | `1` | `0`이면 이미지 판독 끄고 제목만 사용 |
 
 ### API 키 주의
@@ -71,7 +73,18 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 - 실행 1회당 미판정 건을 **하나의 메시지로 묶어** 발송한다. 20건이 밀려도 알림은 1개다
 - 미판정 공지는 추출 레코드를 남기지 않으므로, 한도 회복 후 `--reextract`가 자동으로 다시 판정하고 D-7/3/1 리마인더를 그때 예약한다
 
-한도 판정은 두 겹이다. 로컬 카운터(`CUK_GEMINI_RPD`)는 API를 두드리지 않기 위한 보수적 사전 차단이고, **실제 기준은 API가 돌려주는 429**다. 구글이 무료 한도를 수시로 바꾸므로 코드에 한도를 진실로 박아두지 않았다.
+### 측정된 무료 한도 (2026-08-05)
+
+| 모델 | 일일 한도 | 근거 |
+|---|---|---|
+| `gemini-2.5-flash` | **20건** | 429 응답의 `quotaValue` |
+| `gemini-2.5-flash-lite` | **20건** | 429 응답의 `quotaValue` |
+
+하루 20~40건 올라오는 공지에 비해 모델 하나로는 턱없이 부족하다. **무료 한도는 모델별로 따로 잡히므로** 한 모델이 소진되면 다음 모델로 넘어간다(`CUK_MODEL_CHAIN`). 체인 전체가 소진돼야 판정을 포기한다.
+
+한도 판정은 두 겹이다. 로컬 카운터는 API를 두드리지 않기 위한 사전 차단이고, **실제 기준은 API가 돌려주는 429**다. 429의 `quotaValue`를 모델별로 저장해서 이후에는 추정값 대신 관측값을 쓴다.
+
+주의: 429의 `retryDelay`는 신뢰하면 안 된다. **일일 한도 소진인데도 "38초 후 재시도"를 준다.** 판정 근거는 `quotaId`의 `PerDay`/`PerMinute`다.
 
 ## 사용
 
@@ -108,6 +121,6 @@ python -m unittest discover -s tests        # 단위 테스트
 ## 주의
 
 - 수집 대상은 **로그인 없이 공개된 공지사항**에 한정한다. 로그인·CAPTCHA 우회 금지
-- `/_attach/` 이미지 판독은 robots.txt Disallow 경로에 대한 **의뢰인 승인 예외**다 (2026-08-03). 본문이 빈 공지에 한해, 공지당 5장까지, 캐시해서 1회만 받는다. 상세는 [docs/M1_RESULT.md](docs/M1_RESULT.md) §3
+- `/_attach/` 이미지 판독은 robots.txt Disallow 경로에 대한 **의뢰인 승인 예외**다 (2026-08-03). 본문이 빈 공지에 한해, 공지당 3장까지, 캐시해서 1회만 받는다. 상세는 [docs/M1_RESULT.md](docs/M1_RESULT.md) §3
 - 개인용·비공개 사용에 한정한다. 재배포·서비스화는 별도 검토 대상
 - 학교에서 차단하거나 문의가 오면 즉시 중단하고 의뢰인에게 알린다

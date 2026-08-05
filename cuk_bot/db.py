@@ -57,10 +57,18 @@ CREATE TABLE IF NOT EXISTS crawl_log (
     item_count INTEGER,
     error      TEXT
 );
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+-- Keyed by model: free-tier allowances differ per model, so one model being
+-- spent must not block another.
 CREATE TABLE IF NOT EXISTS api_usage (
-    day     TEXT PRIMARY KEY,
+    day     TEXT NOT NULL,
+    model   TEXT NOT NULL DEFAULT '',
     used    INTEGER NOT NULL DEFAULT 0,
-    blocked INTEGER NOT NULL DEFAULT 0   -- API itself reported quota spent
+    blocked INTEGER NOT NULL DEFAULT 0,  -- API itself reported quota spent
+    PRIMARY KEY (day, model)
 );
 CREATE TABLE IF NOT EXISTS unjudged (
     board_id   TEXT NOT NULL,

@@ -13,8 +13,22 @@ from datetime import date, datetime, timedelta
 
 import requests
 
+from .config import BOARDS_BY_ID
+
 REMINDER_KINDS = (("D-7", 7), ("D-3", 3), ("D-1", 1))
 LOW_CONFIDENCE = 0.5
+
+
+def _board_name(item: dict) -> str:
+    """Human board name, falling back to the id only if it is unknown.
+
+    Rows read straight from the database carry board_id but no display name,
+    and "dorm_f_inout" in an alert tells the reader nothing.
+    """
+    if item.get("board_name"):
+        return item["board_name"]
+    board = BOARDS_BY_ID.get(item.get("board_id") or "")
+    return board["name"] if board else (item.get("board_id") or "")
 
 
 def esc(text: str) -> str:
@@ -80,7 +94,7 @@ def format_alert(item: dict, data: dict) -> str:
         f"⏰ 마감 {esc(fmt_deadline(data.get('apply_end')))}",
         f"👤 대상 {esc(data.get('target') or '미상')}",
         f"📝 방법 {esc(data.get('method') or '공지 참조')}",
-        f"📂 {esc(item.get('board_name') or item.get('board_id'))}",
+        f"📂 {esc(_board_name(item))}",
     ]
     caveats = _caveats(data)
     if caveats:
@@ -106,7 +120,7 @@ def format_unjudged(items: list, reason: str) -> str:
         "",
     ]
     for item in items:
-        board = esc(item.get("board_name") or item.get("board_id") or "")
+        board = esc(_board_name(item))
         lines.append(f'• <a href="{item["url"]}">{esc(item["title"][:60])}</a>')
         if board:
             lines.append(f"  <i>{board}</i>")

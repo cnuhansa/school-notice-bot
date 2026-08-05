@@ -14,38 +14,10 @@ import sys
 from . import db, notifier
 from .collector import collect
 from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
-                     NOTIFY_WHEN_UNJUDGED, READ_IMAGES)
+                     MODEL_CHAIN, NOTIFY_WHEN_UNJUDGED, READ_IMAGES)
 from .content import resolve
-from .extractor import extract, make_client
+from .judge import Judge
 from .quota import QuotaExhausted, RequestBudget
-
-
-class Session:
-    """Holds the API client and the free-tier budget for one run.
-
-    The client is created lazily so --dry-run and an already-exhausted run
-    never require a key at all.
-    """
-
-    def __init__(self, con):
-        self.con = con
-        self.budget = RequestBudget(con, DAILY_REQUEST_LIMIT,
-                                    MINUTE_REQUEST_LIMIT)
-        self.unjudged = []
-        self.quota_reason = None
-        self._client = None
-
-    @property
-    def client(self):
-        if self._client is None:
-            self._client = make_client()
-        return self._client
-
-    def forward_unjudged(self, item, reason):
-        """Give up on judging this notice, but never on surfacing it."""
-        self.quota_reason = self.quota_reason or reason
-        db.mark_unjudged(self.con, item["board_id"], item["article_no"], reason)
-        self.unjudged.append(item)
 
 
 def _extract_and_route(con, item, session, notify=True, log=print):
@@ -59,8 +31,7 @@ def _extract_and_route(con, item, session, notify=True, log=print):
     resolved = resolve(item, allow_images=READ_IMAGES)
 
     try:
-        data = extract(item, resolved, client=session.client,
-                       budget=session.budget)
+        data = session.judge(item, resolved)
     except QuotaExhausted as exc:
         session.forward_unjudged(item, str(exc))
         log(f"  ⚠ 한도 소진 — 판정 없이 전달: {item['title'][:40]}")
@@ -98,7 +69,7 @@ def _flush_unjudged(con, session, notify=True, log=print):
         log(f"  {len(session.unjudged)}건 미판정 — 알림 비활성화 상태")
         return
 
-    text = notifier.format_unjudged(session.unjudged, session.quota_reason)
+    text = notifier.format_unjudged(session.unjudged, session.reason)
     if not notify:
         log(text)
         return
@@ -113,9 +84,8 @@ def cmd_check(con, notify=True, log=print):
     items = collect(con, log=log)
     log(f"새 글 {len(items)}건")
 
-    session = Session(con)
-    log(f"  오늘 API 사용 {session.budget.used_today()}건 / "
-        f"잔여 {session.budget.remaining()}건")
+    session = Judge(con)
+    log(f"  모델별 잔여 한도 — {session.summary()}")
 
     for item in items:
         if item.get("is_crosspost"):
@@ -162,8 +132,8 @@ def cmd_reextract(con, only_missing=True, log=print):
         targets = [dict(r) for r in con.execute(
             "SELECT board_id, article_no FROM notices")]
 
-    session = Session(con)
-    log(f"재추출 대상 {len(targets)}건, API 잔여 {session.budget.remaining()}건")
+    session = Judge(con)
+    log(f"재추출 대상 {len(targets)}건 — 잔여 {session.summary()}")
 
     for target in targets:
         item = db.load_notice(con, target["board_id"], target["article_no"])
@@ -173,6 +143,7 @@ def cmd_reextract(con, only_missing=True, log=print):
         item["board_name"] = board["name"] if board else item["board_id"]
         _extract_and_route(con, item, session, notify=False, log=log)
 
+    con.commit()
     if session.unjudged:
         log(f"  ⚠ {len(session.unjudged)}건은 한도 소진으로 여전히 미판정 "
             f"— 한도 회복 후 다시 실행하세요")
@@ -194,10 +165,15 @@ def cmd_status(con, log=print):
         log(f"  {row['board_id']:<18} {row['notices']:>8} "
             f"{row['extracted'] or 0:>10} {row['actionable'] or 0:>11}")
 
-    budget = RequestBudget(con, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT)
-    state = "한도 소진(API 통보)" if budget.is_blocked() else "정상"
-    log(f"\n  Gemini 무료 한도: 오늘 {budget.used_today()}/"
-        f"{DAILY_REQUEST_LIMIT}건 사용, 잔여 {budget.remaining()}건 · {state}")
+    log("\n  모델별 무료 한도 (체인 순서)")
+    for name in MODEL_CHAIN:
+        budget = RequestBudget(con, DAILY_REQUEST_LIMIT,
+                               MINUTE_REQUEST_LIMIT, model=name)
+        observed = budget.observed_limit()
+        source = f"API 관측 {observed}" if observed else "미관측"
+        state = " · 소진" if budget.is_blocked() else ""
+        log(f"    {name:<24} {budget.used_today():>3}/{budget.daily_limit:<4}"
+            f" 잔여 {budget.remaining():<4} ({source}){state}")
 
     waiting = con.execute(
         "SELECT COUNT(*) FROM unjudged u LEFT JOIN extractions e "
@@ -225,6 +201,8 @@ def main(argv=None):
     ap.add_argument("--all", action="store_true",
                     help="--reextract 시 추출 완료분까지 다시")
     ap.add_argument("--status", action="store_true", help="수집 상태 요약")
+    ap.add_argument("--reset-quota", action="store_true",
+                    help="오늘의 한도 소진 표시 해제")
     ap.add_argument("--no-notify", action="store_true", help="발송 없이 출력만")
     args = ap.parse_args(argv)
 
@@ -244,6 +222,11 @@ def main(argv=None):
         cmd_reextract(con, only_missing=not args.all)
     elif args.status:
         cmd_status(con)
+    elif args.reset_quota:
+        for name in MODEL_CHAIN:
+            RequestBudget(con, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
+                          model=name).unblock()
+        print(f"{len(MODEL_CHAIN)}개 모델의 한도 소진 표시를 해제했습니다.")
     else:
         ap.print_help()
         return 1

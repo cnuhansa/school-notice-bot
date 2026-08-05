@@ -20,13 +20,35 @@ CACHE_DIR = os.environ.get("CUK_CACHE", ".cache")
 # GEMINI_API_KEY. A GCP service-account JSON authenticates to Vertex AI
 # instead, which is billed — it will not keep this bot free.
 
-MODEL = os.environ.get("CUK_MODEL", "gemini-2.5-flash")
+# gemini-2.5-flash's free tier is 20 requests/day (reported by the API on
+# 2026-08-05), far below the 20-40 notices this bot sees daily. flash-lite
+# has a larger allowance and read the F관 모집 공고 screenshot exactly right —
+# 신청 기간, 대상, 접수 이메일 all matched the source image.
+MODEL = os.environ.get("CUK_MODEL", "gemini-2.5-flash-lite")
+
+# The free allowance is granted per model, so exhausting one leaves the next
+# untouched. Walking this chain multiplies the daily budget while staying
+# free. Ordered cheapest-and-largest-quota first; all support image input,
+# which the dorm screenshots require.
+MODEL_CHAIN = [m.strip() for m in os.environ.get(
+    "CUK_MODEL_CHAIN",
+    "gemini-2.5-flash-lite,gemini-2.5-flash,"
+    "gemini-2.0-flash-lite,gemini-2.0-flash").split(",") if m.strip()]
+if MODEL not in MODEL_CHAIN:
+    MODEL_CHAIN.insert(0, MODEL)
 
 # Google publishes free-tier limits per model and revises them, so these are
 # a conservative local guard, not a claim about the current allowance. The
 # authoritative signal is a 429 from the API; this only avoids hammering it.
+# A starting guess only. The real allowance is learned from the API's 429
+# and stored per model, so this stops mattering after the first exhaustion.
 DAILY_REQUEST_LIMIT = int(os.environ.get("CUK_GEMINI_RPD", "180"))
-MINUTE_REQUEST_LIMIT = int(os.environ.get("CUK_GEMINI_RPM", "10"))
+
+# Screenshot notices carry several images per request, so the free tier's
+# per-minute allowance binds long before the daily one. Measured on
+# 2026-08-05: image-heavy calls drew a 429 with a 23s retry at roughly five
+# per minute. These are empirical guards, not published limits.
+MINUTE_REQUEST_LIMIT = int(os.environ.get("CUK_GEMINI_RPM", "3"))
 
 # When the allowance runs out the bot stops judging and notifies about every
 # new notice instead. Over-notifying is recoverable; a missed 입사 신청
@@ -46,8 +68,10 @@ MIN_USABLE_CHARS = 300
 THIN_TEXT_FLOOR = 60
 
 # Dorm notices run up to 20 screenshots. The deadline lives in the opening
-# pages; the rest are forms and floor plans. Capping is logged, never silent.
-MAX_IMAGES_PER_NOTICE = int(os.environ.get("CUK_MAX_IMAGES", "5"))
+# pages; the rest are forms and floor plans. Verified on the F관 추가 모집
+# 공고, where the 모집일정 table sits on the first image. Three keeps requests
+# inside the free tier's per-minute allowance. Capping is logged, never silent.
+MAX_IMAGES_PER_NOTICE = int(os.environ.get("CUK_MAX_IMAGES", "3"))
 
 # Reading /_attach/ images is a client-approved exception to robots.txt
 # (2026-08-03). Set to 0 to fall back to title-only alerts.

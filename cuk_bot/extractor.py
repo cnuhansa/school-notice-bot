@@ -14,7 +14,12 @@ import time
 from datetime import date
 
 from .config import MODEL
-from .quota import QuotaExhausted, is_quota_error
+from .quota import QuotaExhausted, classify_quota_error, is_quota_error
+
+# Longest pause worth taking for a rate limit. A --check run fires every ten
+# minutes, so a wait beyond this would collide with the next run.
+MAX_THROTTLE_WAIT = 90
+MAX_THROTTLE_RETRIES = 2
 
 SYSTEM = (
     "너는 대학교 공지사항에서 '학생이 기한 내에 해야 할 행동'을 뽑아내는 추출기다. "
@@ -51,6 +56,28 @@ IMAGE_HINT = """이 공지는 본문이 이미지로 게시되어 있다. 첨부
 
 class ExtractionError(RuntimeError):
     pass
+
+
+# Constraining the reply removes the two ways the model used to break the
+# parser: prose around the JSON, and a field name it invented.
+def _response_schema():
+    from google.genai import types
+
+    text = types.Schema(type="STRING", nullable=True)
+    return types.Schema(
+        type="OBJECT",
+        properties={
+            "is_actionable": types.Schema(type="BOOLEAN"),
+            "category": types.Schema(type="STRING"),
+            "apply_start": text,
+            "apply_end": text,
+            "target": text,
+            "method": text,
+            "one_line": types.Schema(type="STRING"),
+            "confidence": types.Schema(type="NUMBER"),
+        },
+        required=["is_actionable", "category", "one_line", "confidence"],
+    )
 
 
 def build_prompt(item: dict, resolved: dict) -> str:
@@ -131,15 +158,23 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
     client = client or make_client()
     contents = _build_contents(build_prompt(item, resolved),
                                resolved.get("images") or [])
+    # gemini-2.5-flash reasons before answering, and those tokens come out of
+    # the same output budget. At 800 tokens the model spent 764 thinking and
+    # returned a JSON object cut off mid-string, so thinking is disabled and
+    # the budget raised: this is extraction, not a problem that needs a
+    # scratchpad.
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM,
         response_mime_type="application/json",
+        response_schema=_response_schema(),
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
         temperature=0.0,
-        max_output_tokens=800,
+        max_output_tokens=1024,
     )
 
     last_error = None
-    for attempt in (1, 2):
+    throttles = 0
+    for attempt in (1, 2, 3, 4):
         try:
             resp = client.models.generate_content(
                 model=model or MODEL, contents=contents, config=config)
@@ -152,12 +187,27 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
             last_error = f"json decode failed (attempt {attempt}): {exc}"
             continue
         except Exception as exc:
-            if is_quota_error(exc):
+            if not is_quota_error(exc):
+                last_error = f"api call failed (attempt {attempt}): {exc}"
+                break
+
+            scope, retry_after, limit = classify_quota_error(exc)
+            if scope == "day":
                 if budget is not None:
+                    budget.remember_limit(limit)
                     budget.mark_blocked()
-                raise QuotaExhausted(f"Gemini 무료 한도 소진: {str(exc)[:120]}")
-            last_error = f"api call failed (attempt {attempt}): {exc}"
-            break
+                cap = f" (하루 {limit}건)" if limit else ""
+                raise QuotaExhausted(
+                    f"{model or MODEL} 일일 무료 한도 소진{cap}", scope="day")
+
+            # A rate limit clears on its own. Waiting keeps the verdict;
+            # giving up here would downgrade a judgeable notice to unjudged.
+            if throttles >= MAX_THROTTLE_RETRIES:
+                raise QuotaExhausted(
+                    f"{model or MODEL} 분당 한도 반복 초과", scope="minute")
+            throttles += 1
+            time.sleep(min(retry_after or 60, MAX_THROTTLE_WAIT))
+            continue
 
     raise ExtractionError(last_error)
 
