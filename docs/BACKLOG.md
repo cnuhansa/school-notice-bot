@@ -5,10 +5,10 @@
 | # | 작업 | 이유 |
 |---|---|---|
 | H1 | **채널 테스트 메시지 3건 삭제** | 발송 시 `message_id` 를 저장하지 않았고, 봇 API 로는 채널의 과거 메시지를 조회할 수 없다. 텔레그램 앱에서 직접 삭제 |
-| H2 | **healthchecks.io 모니터 2개 생성** | 가입 필요. `--check`(grace 90분) / `--digest`(grace 26시간) 각각. ping URL 을 GitHub Secrets 에 등록 |
-| H3 | **GitHub 레포 생성 + Secrets 등록** | 레포 소유자 작업. 목록은 [OPERATIONS.md](OPERATIONS.md) |
+
+
 | H4 | **Vertex 크레딧 확인 + 예산 알림** | 콘솔 전용. 결제 → 크레딧에서 잔액·만료일 확인, 월 $1 예산 알림 설정 |
-| H5 | **`--backfill` 1회 실행** | 워크플로 배포 후. **순서를 어기면 알림 폭탄** |
+| H5 | **healthchecks 기본 모니터 `My First Check` 삭제** | 가입 시 자동 생성된 샘플. ping 이 없어 **약 25시간 뒤 오탐 DOWN 경고**가 온다 |
 
 ## 코드 작업
 

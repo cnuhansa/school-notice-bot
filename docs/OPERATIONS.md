@@ -34,8 +34,8 @@ GitHub cron 은 부하에 따라 **최대 30분 지연**될 수 있다. 마감�
 | `GEMINI_API_KEY` | ✅ | **AI Studio 키**. 무료 한도는 여기서만 나온다 |
 | `TELEGRAM_BOT_TOKEN` | ✅ | |
 | `TELEGRAM_CHAT_ID` | ✅ | 채널은 `-100…` 형태. 앞자리를 빼면 조용히 실패한다 |
-| `CUK_HEALTHCHECK_URL` | 권장 | `--check` 용 healthchecks.io ping URL |
-| `CUK_HEALTHCHECK_DIGEST_URL` | 권장 | `--digest` 용 (별도 모니터) |
+| `CUK_HEALTHCHECK_URL` | ✅ | `--check` 용 ping URL (모니터 `cuk-bot check`) |
+| `CUK_HEALTHCHECK_DIGEST_URL` | ✅ | `--digest` 용 (모니터 `cuk-bot digest`) |
 | `CUK_CONTACT_EMAIL` | 선택 | User-Agent 연락처. 현재 **미설정**(§아래) |
 
 ### 연락처 없이 운영 (의도된 변경)
@@ -76,6 +76,17 @@ gh workflow enable check --repo <repo>    # 5번
 | 외부 (healthchecks.io) | "죽었는지" | ping 끊기면 이메일 |
 | 내부 (`crawl_log`) | "왜 죽었는지" | 게시판별 실패 이력, git 히스토리만큼 보존 |
 | 채널 | "사용자가 눈치채는지" | 매일 08:00 메시지 부재 |
+
+**설정된 모니터** (healthchecks.io, 계정 `cnuhansa@gmail.com`)
+
+| 모니터 | period | grace | 의미 |
+|---|---|---|---|
+| `cuk-bot check` | 30분 | 90분 | 3회 연속 실행이 빠지면 경고 |
+| `cuk-bot digest` | 1일 | 26시간 | 아침 다이제스트가 하루 넘게 빠지면 경고 |
+
+grace 를 주기보다 넉넉히 잡은 이유: GitHub cron 은 부하에 따라 최대 30분 지연된다. 빠듯하게 잡으면 정상 지연에도 경고가 울려 **경고를 무시하는 습관**이 생기고, 그러면 감지 장치가 있으나 마나다.
+
+ping 은 3단계다 — 실행 시작 시 `/start`, 성공 시 기본 URL, 예외 시 `/fail`. healthchecks 가 실행 소요 시간까지 기록하므로 "돌긴 하는데 점점 느려진다" 도 보인다.
 
 healthchecks 무료 플랜은 로그를 100건만 보존한다(30분 주기 = 약 2일). 경보 자체는 로그와 무관하므로 문제되지 않으며, 장기 추적은 `crawl_log` 가 맡는다.
 
