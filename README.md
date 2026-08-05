@@ -35,10 +35,9 @@ cuk_bot/
   collector.py  게시판 순회, 새 글만 상세 진입
   notifier.py   텔레그램 발송, D-day, 리마인더 예약
   cli.py        커맨드
-docs/           핸드오프 명세, M1 판정 결과
+docs/           M1·M2 판정 결과, 운영·장애 대응
 tools/          M1·M2 검증 하네스
 tests/          리마인더·한도·모델체인·파싱 단위 테스트
-reference/      원본 스켈레톤 (실행 금지, 참고용)
 ```
 
 ## 설치
@@ -154,6 +153,10 @@ python -m unittest discover -s tests        # 단위 테스트
 GitHub Actions 로 돌린다 — `.github/workflows/`. 24시간 30분 간격 수집, 매일 08:00 다이제스트. **Vercel 무료 티어는 불가**(cron 하루 1회 + 파일시스템 휘발). 배포·장애 대응은 [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 침묵이 정상과 구분되지 않는 것이 이 봇의 가장 위험한 고장이라, 감지를 두 겹으로 뒀다 — 외부 감시(healthchecks.io)가 "죽었는지"를, `crawl_log` 가 "왜 죽었는지"를 맡는다. 새 공지가 없는 날에도 아침 메시지를 보내 **부재 자체가 신호**가 되게 했다.
+
+## 원본 명세서
+
+설계 근거가 된 핸드오프 명세서(HANDOFF)는 **의뢰인 개인정보가 포함돼 레포에 두지 않는다.** 문서에서 `HANDOFF §N` 으로 인용되는 절 번호는 그 문서를 가리킨다. 사본은 의뢰인이 별도 보관한다.
 
 ## 주의
 
