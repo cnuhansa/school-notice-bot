@@ -18,12 +18,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cuk_bot import db  # noqa: E402
 from cuk_bot.collector import collect_board  # noqa: E402
-from cuk_bot.config import BOARDS, BOARDS_BY_ID, READ_IMAGES  # noqa: E402
+from cuk_bot.config import (BOARDS, BOARDS_BY_ID, DAILY_REQUEST_LIMIT,  # noqa: E402
+                            MINUTE_REQUEST_LIMIT, READ_IMAGES)
 from cuk_bot.content import resolve  # noqa: E402
-from cuk_bot.extractor import extract  # noqa: E402
+from cuk_bot.extractor import extract, make_client  # noqa: E402
+from cuk_bot.quota import QuotaExhausted, RequestBudget  # noqa: E402
 
 
-def review_board(con, board, limit, offline):
+def review_board(con, board, limit, offline, client=None, budget=None):
     print(f"\n{'=' * 78}\n[{board['id']}] {board['name']}")
     fresh = collect_board(con, board, limit=limit * 2, log=lambda m: None)
 
@@ -52,7 +54,10 @@ def review_board(con, board, limit, offline):
             continue
 
         try:
-            data = extract(item, resolved)
+            data = extract(item, resolved, client=client, budget=budget)
+        except QuotaExhausted as exc:
+            print(head + f"\n         ! 무료 한도 소진 — 검수 중단: {exc}")
+            raise
         except Exception as exc:
             print(head + "\n         ! extraction failed: " + str(exc)[:90])
             continue
@@ -82,9 +87,22 @@ def main():
     boards = [BOARDS_BY_ID[b] for b in args.board] if args.board else BOARDS
     con = db.connect()
 
+    client = budget = None
+    if not args.offline:
+        budget = RequestBudget(con, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT)
+        print(f"Gemini 무료 한도: 오늘 {budget.used_today()}건 사용, "
+              f"잔여 {budget.remaining()}건")
+        client = make_client()
+
     all_rows = []
     for board in boards:
-        all_rows.extend(review_board(con, board, args.limit, args.offline))
+        try:
+            all_rows.extend(review_board(con, board, args.limit, args.offline,
+                                         client=client, budget=budget))
+        except QuotaExhausted:
+            print("\n한도가 소진되어 나머지 게시판 검수를 중단합니다. "
+                  "내일 다시 실행하세요.")
+            break
 
     print(f"\n{'=' * 78}\nM2 REVIEW SUMMARY   (image reading: "
           f"{'ON' if READ_IMAGES else 'OFF'})")

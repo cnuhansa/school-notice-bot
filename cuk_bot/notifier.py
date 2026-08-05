@@ -89,6 +89,31 @@ def format_alert(item: dict, data: dict) -> str:
     return "\n".join(lines)
 
 
+def format_unjudged(items: list, reason: str) -> str:
+    """Alert for notices forwarded without a verdict.
+
+    When the free allowance runs out the bot stops filtering rather than
+    stops notifying. Everything from the run goes into one message: every
+    notice is still surfaced, but a quiet day and a busy one both cost one
+    ping instead of one per notice.
+    """
+    lines = [
+        "🚨 <b>판정 없이 전달</b>",
+        f"<i>{esc(reason or '판정 불가')}</i>",
+        "",
+        f"아래 {len(items)}건은 신청 여부·마감일을 판정하지 못했습니다. "
+        "직접 확인하세요.",
+        "",
+    ]
+    for item in items:
+        board = esc(item.get("board_name") or item.get("board_id") or "")
+        lines.append(f'• <a href="{item["url"]}">{esc(item["title"][:60])}</a>')
+        if board:
+            lines.append(f"  <i>{board}</i>")
+    lines += ["", "한도가 회복되면 <code>--reextract</code> 로 다시 판정합니다."]
+    return "\n".join(lines)
+
+
 def format_digest(notices: list, reminders: list) -> str:
     lines = []
     if notices:

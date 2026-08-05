@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS crawl_log (
     item_count INTEGER,
     error      TEXT
 );
+CREATE TABLE IF NOT EXISTS api_usage (
+    day     TEXT PRIMARY KEY,
+    used    INTEGER NOT NULL DEFAULT 0,
+    blocked INTEGER NOT NULL DEFAULT 0   -- API itself reported quota spent
+);
+CREATE TABLE IF NOT EXISTS unjudged (
+    board_id   TEXT NOT NULL,
+    article_no TEXT NOT NULL,
+    reason     TEXT,
+    noticed_at TEXT,
+    alerted_at TEXT,
+    PRIMARY KEY (board_id, article_no)
+);
 CREATE INDEX IF NOT EXISTS idx_notices_seen ON notices(seen_at);
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_date, sent_at);
 """
@@ -152,6 +165,29 @@ def pending_extraction(con) -> list:
 
 def queue_digest(con, board_id: str, article_no: str) -> None:
     con.execute("INSERT OR IGNORE INTO pending_digest VALUES (?,?)",
+                (board_id, article_no))
+
+
+def mark_unjudged(con, board_id: str, article_no: str, reason: str) -> None:
+    """Record a notice that was forwarded without an LLM verdict.
+
+    No extraction row is written, so pending_extraction() picks it up on the
+    next --reextract once the allowance resets and it can be graded properly.
+    """
+    con.execute(
+        "INSERT OR IGNORE INTO unjudged (board_id, article_no, reason, "
+        "noticed_at) VALUES (?,?,?,?)", (board_id, article_no, reason, now()))
+
+
+def mark_unjudged_alerted(con, rows: list) -> None:
+    for row in rows:
+        con.execute(
+            "UPDATE unjudged SET alerted_at=? WHERE board_id=? AND article_no=?",
+            (now(), row["board_id"], row["article_no"]))
+
+
+def clear_unjudged(con, board_id: str, article_no: str) -> None:
+    con.execute("DELETE FROM unjudged WHERE board_id=? AND article_no=?",
                 (board_id, article_no))
 
 

@@ -11,7 +11,27 @@ import os
 
 DB_PATH = os.environ.get("CUK_DB", "cuk_notices.db")
 CACHE_DIR = os.environ.get("CUK_CACHE", ".cache")
-MODEL = os.environ.get("CUK_MODEL", "claude-sonnet-5")
+
+# ─────────────────────────────────────────────────────────────
+# Gemini (free tier)
+# ─────────────────────────────────────────────────────────────
+#
+# The free tier comes from the Gemini Developer API (AI Studio) key in
+# GEMINI_API_KEY. A GCP service-account JSON authenticates to Vertex AI
+# instead, which is billed — it will not keep this bot free.
+
+MODEL = os.environ.get("CUK_MODEL", "gemini-2.5-flash")
+
+# Google publishes free-tier limits per model and revises them, so these are
+# a conservative local guard, not a claim about the current allowance. The
+# authoritative signal is a 429 from the API; this only avoids hammering it.
+DAILY_REQUEST_LIMIT = int(os.environ.get("CUK_GEMINI_RPD", "180"))
+MINUTE_REQUEST_LIMIT = int(os.environ.get("CUK_GEMINI_RPM", "10"))
+
+# When the allowance runs out the bot stops judging and notifies about every
+# new notice instead. Over-notifying is recoverable; a missed 입사 신청
+# deadline is not. Set to 0 to fall back to silence.
+NOTIFY_WHEN_UNJUDGED = os.environ.get("CUK_NOTIFY_UNJUDGED", "1") != "0"
 
 # ─────────────────────────────────────────────────────────────
 # Content resolution (see cuk_bot/content.py, docs/M1_RESULT.md)

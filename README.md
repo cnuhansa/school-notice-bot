@@ -11,7 +11,7 @@
 | 마일스톤 | 상태 |
 |---|---|
 | M1 파싱 검증 | ✅ 파서 PASS / ⚠️ 콘텐츠 이슈 → [docs/M1_RESULT.md](docs/M1_RESULT.md) |
-| M2 추출 검증 | 🔨 코드 완료, 표본 검수 미실행 (API 키 대기) |
+| M2 추출 검증 | 🔨 코드 완료, 표본 검수 미실행 (Gemini 키 대기) |
 | M3 알림 | 🔨 코드 완료, 실발송 미검증 (텔레그램 토큰 대기) |
 | M4 운영 | ⬜ 미착수 |
 
@@ -25,7 +25,8 @@ cuk_bot/
   fetcher.py    전역 1.5초 간격 강제 (병렬 요청 불가 구조)
   parser.py     목록·상세 파서 (div.b-content-box 확정)
   content.py    본문 → PDF → 스크린샷 → 제목 순 에스컬레이션
-  extractor.py  Claude 호출, 마감일 구조화 추출
+  extractor.py  Gemini 호출, 마감일 구조화 추출
+  quota.py      무료 한도 예산 관리, 소진 감지
   collector.py  게시판 순회, 새 글만 상세 진입
   notifier.py   텔레그램 발송, D-day, 리마인더 예약
   cli.py        커맨드
@@ -38,22 +39,39 @@ reference/      원본 스켈레톤 (실행 금지, 참고용)
 ## 설치
 
 ```bash
-pip install requests beautifulsoup4 anthropic pillow pymupdf
+pip install requests beautifulsoup4 google-genai pillow pymupdf
 ```
 
 ## 환경변수
 
 | 이름 | 필수 | 기본값 | 용도 |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ | — | LLM 추출 |
+| `GEMINI_API_KEY` | ✅ | — | LLM 추출 (**AI Studio 키**, 무료 한도) |
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | @BotFather 발급 |
 | `TELEGRAM_CHAT_ID` | ✅ | — | 수신자 chat id |
 | `CUK_DB` | | `cuk_notices.db` | SQLite 경로 |
-| `CUK_MODEL` | | `claude-sonnet-5` | 모델명 |
+| `CUK_MODEL` | | `gemini-2.5-flash` | 모델명 |
+| `CUK_GEMINI_RPD` | | `180` | 일일 요청 상한 (로컬 가드) |
+| `CUK_GEMINI_RPM` | | `10` | 분당 요청 상한 (로컬 가드) |
+| `CUK_NOTIFY_UNJUDGED` | | `1` | `0`이면 판정 불가 시 알림도 안 함 |
 | `CUK_CACHE` | | `.cache` | 다운로드 캐시 |
 | `CUK_CONTACT_EMAIL` | | — | User-Agent에 남길 연락처 |
 | `CUK_MAX_IMAGES` | | `5` | 공지당 판독할 이미지 수 |
 | `CUK_READ_IMAGES` | | `1` | `0`이면 이미지 판독 끄고 제목만 사용 |
+
+### API 키 주의
+
+무료 한도는 **AI Studio에서 발급한 Developer API 키**(`AIza…`)에서만 나온다. GCP 서비스 계정 JSON은 Vertex AI로 붙어 **과금 대상**이므로 이 봇에 쓰면 안 된다. 발급: [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+
+## 무료 한도 소진 시 동작 (fail-open)
+
+**판정할 수 없으면 필터링을 멈출 뿐, 알림은 멈추지 않는다.**
+
+- 한도 소진 · 키 누락 · API 장애 · 응답 파싱 실패 — 어떤 이유든 판정 불가면 해당 공지를 **판정 없이 전달**한다
+- 실행 1회당 미판정 건을 **하나의 메시지로 묶어** 발송한다. 20건이 밀려도 알림은 1개다
+- 미판정 공지는 추출 레코드를 남기지 않으므로, 한도 회복 후 `--reextract`가 자동으로 다시 판정하고 D-7/3/1 리마인더를 그때 예약한다
+
+한도 판정은 두 겹이다. 로컬 카운터(`CUK_GEMINI_RPD`)는 API를 두드리지 않기 위한 보수적 사전 차단이고, **실제 기준은 API가 돌려주는 429**다. 구글이 무료 한도를 수시로 바꾸므로 코드에 한도를 진실로 박아두지 않았다.
 
 ## 사용
 
