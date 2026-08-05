@@ -1,6 +1,6 @@
 # school-notice-bot (가톨릭대 공지 알림봇)
 
-성심교정 공지·기숙사·학과 게시판 8곳을 모아 **"기한 내에 무언가 해야 하는 공지"만** 골라 마감일 기준으로 알린다.
+성심교정 공지·기숙사·학과 게시판 11곳을 모아 **"기한 내에 무언가 해야 하는 공지"만** 골라 마감일 기준으로 알린다.
 
 기숙사 공지는 `dorm.catholic.ac.kr`의 별도 게시판 4개로 쪼개져 있고, 본교 공지에는 일부만 재게시된다(→ [docs/M1_RESULT.md](docs/M1_RESULT.md) §5). 본교 공지만 봐서는 입사 모집 공고를 놓치기 쉬운 구조라서 만들어졌다.
 
@@ -21,7 +21,7 @@
 
 ```
 cuk_bot/
-  config.py     게시판 8개 정의, HTTP 예의 설정, 임계치
+  config.py     게시판 11개 정의, HTTP 예의 설정, 임계치
   fetcher.py    전역 1.5초 간격 강제 (병렬 요청 불가 구조)
   parser.py     목록·상세 파서 (div.b-content-box 확정)
   content.py    본문 → PDF → 스크린샷 → 제목 순 에스컬레이션
@@ -55,7 +55,8 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 | `TELEGRAM_CHAT_ID` | ✅ | — | 채널 chat id (채널은 `-100…` 형태) |
 | `CUK_DB` | | `cuk_notices.db` | SQLite 경로 |
 | `CUK_MODEL` | | `gemini-3.1-flash-lite` | 1순위 모델 |
-| `CUK_MODEL_CHAIN` | | 3.1→3.5→3.6→2.5→alias | 한도 소진 시 넘어갈 모델 순서 |
+| `CUK_MODEL_CHAIN` | | 3.1→3.5→3.6→alias | 한도 소진 시 넘어갈 모델 순서 |
+| `CUK_VERTEX_CREDENTIALS_JSON` | | — | Vertex 서비스 계정 JSON (1순위 자격증명) |
 | `CUK_VERTEX_CREDENTIALS` | | — | **테스트 전용** 서비스 계정 JSON 경로 (설정 시 Vertex, 과금) |
 | `CUK_VERTEX_PROJECT` | | JSON의 project_id | Vertex 프로젝트 override |
 | `CUK_VERTEX_LOCATION` | | `global` | Vertex 리전 |

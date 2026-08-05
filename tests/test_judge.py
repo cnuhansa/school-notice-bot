@@ -1,11 +1,12 @@
 """Falling through the model chain as each free tier runs out."""
 
+import os
 import unittest
 from unittest import mock
 
 import support  # noqa: F401
 
-from cuk_bot import db, judge  # noqa: E402
+from cuk_bot import client, db, judge  # noqa: E402
 from cuk_bot.extractor import ModelUnavailable  # noqa: E402
 from cuk_bot.quota import QuotaExhausted  # noqa: E402
 
@@ -15,6 +16,72 @@ VERDICT = {"is_actionable": True, "category": "기숙사", "one_line": "신청",
 
 def spent(model):
     return QuotaExhausted(f"{model} 일일 무료 한도 소진 (하루 20건)", scope="day")
+
+
+class CredentialChain(unittest.TestCase):
+    """Vertex carries the load; AI Studio catches it when Vertex cannot.
+
+    A billing lapse or revoked service account must hand over to the free
+    tier. Without the fallback the bot keeps running but stops judging, and
+    forwarding everything unjudged looks like working software.
+    """
+
+    def setUp(self):
+        self.con = db.connect(":memory:")
+
+    def test_vertex_is_tried_before_studio(self):
+        with mock.patch.dict(os.environ, {
+                "CUK_VERTEX_CREDENTIALS": "/tmp/sa.json",
+                "GEMINI_API_KEY": "AIzaTest"}, clear=True):
+            self.assertEqual(client.available_credentials(),
+                             [client.VERTEX, client.STUDIO])
+
+    def test_studio_alone_when_vertex_is_unconfigured(self):
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "AIzaTest"},
+                             clear=True):
+            self.assertEqual(client.available_credentials(), [client.STUDIO])
+
+    def test_failing_vertex_hands_over_to_studio(self):
+        with mock.patch.dict(os.environ, {
+                "CUK_VERTEX_CREDENTIALS": "/nonexistent.json",
+                "GEMINI_API_KEY": "AIzaTest"}, clear=True):
+            j = judge.Judge(self.con, models=["m1"])
+            stub = mock.Mock()
+
+            def build(kind):
+                if kind == client.VERTEX:
+                    raise client.CredentialError("결제 중단")
+                return stub
+
+            with mock.patch.object(judge, "build", side_effect=build):
+                self.assertIs(j.client, stub)
+
+        self.assertEqual(j._credentials, [client.STUDIO])
+        self.assertTrue(any("결제 중단" in d for d in j.dropped))
+
+    def test_handover_is_reported_not_silent(self):
+        with mock.patch.dict(os.environ, {
+                "CUK_VERTEX_CREDENTIALS": "/nonexistent.json",
+                "GEMINI_API_KEY": "AIzaTest"}, clear=True):
+            j = judge.Judge(self.con, models=["m1"])
+            with mock.patch.object(judge, "build",
+                                   side_effect=[client.CredentialError("x"),
+                                                mock.Mock()]):
+                j.client
+        self.assertEqual(len(j.dropped), 1,
+                         "자격증명 전환이 기록되지 않으면 조용히 과금이 바뀐다")
+
+    def test_no_credentials_at_all_raises(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            j = judge.Judge(self.con, models=["m1"])
+            with self.assertRaises(client.CredentialError):
+                j.client
+
+    def test_a_built_client_is_reused_not_rebuilt(self):
+        j = judge.Judge(self.con, models=["m1"])
+        stub = mock.Mock()
+        j._client = stub
+        self.assertIs(j.client, stub)
 
 
 class ModelChain(unittest.TestCase):

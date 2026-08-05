@@ -32,6 +32,10 @@ jobs:
 
       - name: 새 공지 수집 및 알림
         env:
+          # Vertex first, AI Studio behind it. If Vertex stops working the
+          # free tier takes over rather than the bot quietly forwarding
+          # everything unjudged.
+          CUK_VERTEX_CREDENTIALS_JSON: ${{ secrets.CUK_VERTEX_CREDENTIALS_JSON }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

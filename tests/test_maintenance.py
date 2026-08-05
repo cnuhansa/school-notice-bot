@@ -7,11 +7,12 @@ cannot be re-applied compounds instead of resetting.
 
 import json
 import unittest
+from datetime import date
 from unittest import mock
 
 import support  # noqa: F401
 
-from cuk_bot import cli, db, notifier  # noqa: E402
+from cuk_bot import cli, db, digest, notifier  # noqa: E402
 from support import days_out  # noqa: E402
 
 
@@ -43,7 +44,7 @@ class DigestPreview(unittest.TestCase):
             "SELECT COUNT(*) FROM reminders WHERE sent_at IS NULL").fetchone()[0]
 
     def test_preview_leaves_the_queue_intact(self):
-        cli.cmd_digest(self.con, notify=False, log=lambda _: None)
+        digest.run(self.con, notify=False, log=lambda _: None)
 
         self.assertEqual(self.pending(), 1)
         self.assertEqual(self.unsent_reminders(), 1)
@@ -110,6 +111,73 @@ class Renormalize(unittest.TestCase):
         self.assertTrue(payload["raw"]["is_actionable"],
                         "모델 원본 응답이 덮어써짐 — 규칙을 되돌릴 수 없게 됨")
         self.assertEqual(payload["raw"]["confidence"], 0.9)
+
+
+class MonthCatchup(unittest.TestCase):
+    """The month's backlog goes out once, and only once.
+
+    --backfill silences everything already on the boards, which is what stops
+    the first run from firing a hundred alerts — but it also hides what is
+    currently outstanding. This closes that gap without becoming a daily
+    repeat, which the digest cron would otherwise make it.
+    """
+
+    def setUp(self):
+        self.con = db.connect(":memory:")
+        month = date.today().strftime("%Y-%m")
+        for i, day in enumerate(("01", "03")):
+            self.con.execute(
+                "INSERT INTO notices (board_id, article_no, title, url, "
+                "posted_at) VALUES ('main_notice',?,?,?,?)",
+                (str(i), f"이번 달 공지 {i}", "http://x", f"{month}-{day}"))
+        # A notice from an earlier month must not be swept in.
+        self.con.execute(
+            "INSERT INTO notices (board_id, article_no, title, url, posted_at)"
+            " VALUES ('main_notice','9','지난달 공지','http://x','2026-01-05')")
+        self.con.commit()
+
+    def sent_bodies(self, send):
+        return [c.args[0] for c in send.call_args_list]
+
+    def test_this_months_notices_are_sent_once(self):
+        with mock.patch.object(notifier, "send", return_value=True) as send:
+            digest.run(self.con, notify=True, log=lambda _: None)
+
+        catchup = [b for b in self.sent_bodies(send) if "모아보기" in b]
+        self.assertEqual(len(catchup), 1)
+        self.assertIn("이번 달 공지 0", catchup[0])
+        self.assertNotIn("지난달 공지", catchup[0])
+
+    def test_second_digest_does_not_repeat_it(self):
+        with mock.patch.object(notifier, "send", return_value=True):
+            digest.run(self.con, notify=True, log=lambda _: None)
+        with mock.patch.object(notifier, "send", return_value=True) as send:
+            digest.run(self.con, notify=True, log=lambda _: None)
+
+        self.assertEqual([b for b in self.sent_bodies(send) if "모아보기" in b],
+                         [])
+
+    def test_failed_send_is_retried_tomorrow(self):
+        """The flag is set on delivery, not on the attempt."""
+        with mock.patch.object(notifier, "send", return_value=False):
+            digest.run(self.con, notify=True, log=lambda _: None)
+
+        self.assertIsNone(self.con.execute(
+            "SELECT 1 FROM meta WHERE key=?",
+            (digest.CATCHUP_FLAG,)).fetchone())
+
+        with mock.patch.object(notifier, "send", return_value=True) as send:
+            digest.run(self.con, notify=True, log=lambda _: None)
+        self.assertTrue([b for b in self.sent_bodies(send) if "모아보기" in b])
+
+    def test_preview_neither_sends_nor_marks_it_done(self):
+        with mock.patch.object(notifier, "send") as send:
+            digest.run(self.con, notify=False, log=lambda _: None)
+
+        send.assert_not_called()
+        self.assertIsNone(self.con.execute(
+            "SELECT 1 FROM meta WHERE key=?",
+            (digest.CATCHUP_FLAG,)).fetchone())
 
 
 class SchemaMigration(unittest.TestCase):

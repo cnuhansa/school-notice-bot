@@ -12,7 +12,8 @@ does the bot stop judging — and even then it still notifies.
 
 from . import db
 from .config import (DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT, MODEL_CHAIN)
-from .extractor import ModelUnavailable, extract, make_client
+from .client import CredentialError, available_credentials, build, label
+from .extractor import ModelUnavailable, extract
 from .quota import QuotaExhausted, RequestBudget
 
 
@@ -30,21 +31,49 @@ class Judge:
         self.unjudged = []
         self.reason = None
         self._client = None
+        self._credentials = available_credentials()
+        self.dropped = []
         self._exhausted = set()
         self.retired = set()
 
     # ── resources ────────────────────────────────────────────
     @property
     def client(self):
-        """Built lazily so a run with no allowance never needs a key."""
-        if self._client is None:
-            self._client = make_client()
-        return self._client
+        """Current credential's client, built lazily.
+
+        Lazy so a run with no allowance left never needs a credential at all.
+        """
+        if self._client is not None:
+            return self._client
+
+        while self._credentials:
+            kind = self._credentials[0]
+            try:
+                self._client = build(kind)
+                return self._client
+            except Exception as exc:
+                self._drop_credential(f"{kind} 사용 불가: {str(exc)[:70]}")
+        raise CredentialError("사용 가능한 자격증명 없음")
+
+    def _drop_credential(self, reason: str) -> None:
+        """Move to the next credential. A dead one must not stall the run.
+
+        Vertex failing has to hand over to the free tier rather than turn
+        every notice unjudged — otherwise a billing lapse silently switches
+        the bot from filtering to forwarding everything.
+        """
+        if self._credentials:
+            self.dropped.append(reason)
+            self._credentials.pop(0)
+        self._client = None
 
     def available(self) -> list:
         return [name for name in self.models
                 if name not in self._exhausted
                 and self.budgets[name].remaining() > 0]
+
+    def credential(self) -> str:
+        return label(self._credentials[0]) if self._credentials else "없음"
 
     def summary(self) -> str:
         parts = []
@@ -70,6 +99,9 @@ class Judge:
             try:
                 return extract(item, resolved, client=self.client,
                                budget=self.budgets[name], model=name)
+            except CredentialError as exc:
+                # Building the client failed outright — nothing to retry here.
+                raise QuotaExhausted(f"자격증명 없음: {exc}", scope="day")
             except QuotaExhausted as exc:
                 # Both a spent day and a stubborn rate limit are per model,
                 # so the next model in the chain is worth trying.

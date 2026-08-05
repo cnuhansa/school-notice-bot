@@ -20,9 +20,10 @@ CACHE_DIR = os.environ.get("CUK_CACHE", ".cache")
 # GEMINI_API_KEY. A GCP service-account JSON authenticates to Vertex AI
 # instead, which is billed — it will not keep this bot free.
 
-# gemini-2.5-* and 2.0-* retire 2026-10-16, so the 3.x models lead. All four
-# below were checked against the F관 모집 공고 screenshot on 2026-08-05 and
-# read 신청 기간 2026-08-03~08-04 17:00, 대상, and the 접수 이메일 correctly.
+# gemini-2.5-* is retired from this chain by client decision (2026-08-05) —
+# it goes end-of-life 2026-10-16 and there is no reason to build a habit on
+# it. Every model below was checked against the F관 모집 공고 screenshot and
+# read 신청 기간 2026-08-03~08-04 17:00, 대상 and 접수 이메일 correctly.
 MODEL = os.environ.get("CUK_MODEL", "gemini-3.1-flash-lite")
 
 # The free allowance is granted per model, so exhausting one leaves the next
@@ -36,8 +37,7 @@ MODEL = os.environ.get("CUK_MODEL", "gemini-3.1-flash-lite")
 MODEL_CHAIN = [m.strip() for m in os.environ.get(
     "CUK_MODEL_CHAIN",
     "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash,"
-    "gemini-3.6-flash,gemini-2.5-flash-lite,gemini-2.5-flash,"
-    "gemini-flash-lite-latest").split(",") if m.strip()]
+    "gemini-3.6-flash,gemini-flash-lite-latest").split(",") if m.strip()]
 if MODEL not in MODEL_CHAIN:
     MODEL_CHAIN.insert(0, MODEL)
 
@@ -186,6 +186,36 @@ BOARDS = [
         "url": "https://french.catholic.ac.kr/french/community/recruitment.do",
         "group": "dept",
     },
+    # Added 2026-08-05. The handoff guessed these URLs and every guess was
+    # wrong — all four 404'd or returned nothing. These are the paths the
+    # sites actually serve, each verified for 10+ listed items, dated rows
+    # and a matching body selector before being added.
+    {
+        "id": "career",
+        "name": "취·창업처 정보게시판",
+        "url": "https://career.catholic.ac.kr/career/board/news.do",
+        "group": "career",
+    },
+    {
+        # OIA runs five boards. The other four carry 외국인 입학 and inbound
+        # exchange material; only this one carries 파견 — 교환학생 오리엔테이션
+        # and overseas scholarship calls, which is what a Korean undergraduate
+        # actually needs.
+        "id": "oia_exchange",
+        "name": "국제교류처 교환학생·파견",
+        "url": "https://oia.catholic.ac.kr/oia/program/international-notice.do",
+        "group": "oia",
+    },
+    {
+        "id": "college",
+        "name": "학부대학 알림마당",
+        "url": "https://catholic-college.catholic.ac.kr/catholic_college/notification/notice.do",
+        "group": "college",
+    },
+    # 학과 소식(french/community/news.do) is deliberately absent: the board
+    # exists but is empty ("등록된 글이 없습니다"), and an empty listing is
+    # treated as a parse failure, so adding it would raise a standing false
+    # alarm. Add it once it carries posts.
 ]
 
 BOARDS_BY_ID = {b["id"]: b for b in BOARDS}

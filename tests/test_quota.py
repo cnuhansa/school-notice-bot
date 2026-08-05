@@ -232,6 +232,7 @@ class FailOpenOnExhaustion(unittest.TestCase):
 
     def test_api_outage_also_forwards_rather_than_dropping(self):
         session = judge.Judge(self.con, models=["m1"])
+        session._client = mock.Mock()  # credentials fine; the API is not
         with mock.patch.object(judge, "extract",
                                side_effect=RuntimeError("backend error")):
             cli._extract_and_route(self.con, self.item, session,

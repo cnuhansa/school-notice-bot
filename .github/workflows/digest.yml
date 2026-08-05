@@ -33,6 +33,10 @@ jobs:
         # 스스로 알아챌 수 없는 유일한 고장 유형이라, 매일 오는 메시지가
         # 끊기는 것 자체를 신호로 쓴다.
         env:
+          # Vertex first, AI Studio behind it. If Vertex stops working the
+          # free tier takes over rather than the bot quietly forwarding
+          # everything unjudged.
+          CUK_VERTEX_CREDENTIALS_JSON: ${{ secrets.CUK_VERTEX_CREDENTIALS_JSON }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

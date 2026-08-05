@@ -166,6 +166,35 @@ def format_unjudged(items: list, reason: str) -> str:
     return "\n".join(lines)
 
 
+def format_catchup(rows: list, month: str) -> str:
+    """One-off summary of the month's notices.
+
+    --backfill marks everything already on the boards as seen, which is what
+    stops the first run from firing a hundred alerts — but it also means the
+    reader never sees what is currently outstanding. This is sent once to
+    close that gap, then never again.
+    """
+    lines = [
+        f"📚 <b>{month} 공지 모아보기</b>",
+        f"<i>봇 도입 전 공지 {len(rows)}건 — 이번 한 번만 보냅니다</i>",
+        "",
+    ]
+    board = None
+    for row in rows:
+        name = _board_name(row)
+        if name != board:
+            board = name
+            lines.append(f"<b>{esc(name)}</b>")
+        mark = "🔔 " if row.get("is_actionable") else ""
+        posted = (row.get("posted_at") or "")[5:]
+        lines.append(f'{mark}<a href="{row["url"]}">{esc(row["title"][:52])}</a>'
+                     f' <i>{esc(posted)}</i>')
+
+    lines += ["", "마감이 지난 것도 있으니 날짜를 확인하세요. "
+                  "이후로는 새 공지만 알립니다."]
+    return "\n".join(lines)
+
+
 def format_alive(healthy: int, total: int) -> str:
     """The empty-day heartbeat.
 
