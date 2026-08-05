@@ -21,3 +21,4 @@ build/
 .idea/
 .vscode/
 .DS_Store
+test_notices.db

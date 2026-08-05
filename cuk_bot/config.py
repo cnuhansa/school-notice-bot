@@ -20,20 +20,24 @@ CACHE_DIR = os.environ.get("CUK_CACHE", ".cache")
 # GEMINI_API_KEY. A GCP service-account JSON authenticates to Vertex AI
 # instead, which is billed — it will not keep this bot free.
 
-# gemini-2.5-flash's free tier is 20 requests/day (reported by the API on
-# 2026-08-05), far below the 20-40 notices this bot sees daily. flash-lite
-# has a larger allowance and read the F관 모집 공고 screenshot exactly right —
-# 신청 기간, 대상, 접수 이메일 all matched the source image.
-MODEL = os.environ.get("CUK_MODEL", "gemini-2.5-flash-lite")
+# gemini-2.5-* and 2.0-* retire 2026-10-16, so the 3.x models lead. All four
+# below were checked against the F관 모집 공고 screenshot on 2026-08-05 and
+# read 신청 기간 2026-08-03~08-04 17:00, 대상, and the 접수 이메일 correctly.
+MODEL = os.environ.get("CUK_MODEL", "gemini-3.1-flash-lite")
 
 # The free allowance is granted per model, so exhausting one leaves the next
 # untouched. Walking this chain multiplies the daily budget while staying
-# free. Ordered cheapest-and-largest-quota first; all support image input,
-# which the dorm screenshots require.
+# free — the measured 20/day per model is well under a busy weekday.
+#
+# A retired name raises ModelUnavailable and is skipped rather than failing
+# the notice, so the October retirement degrades capacity instead of breaking
+# the bot. The trailing alias always resolves to a current model, which is
+# what keeps the chain from emptying entirely.
 MODEL_CHAIN = [m.strip() for m in os.environ.get(
     "CUK_MODEL_CHAIN",
-    "gemini-2.5-flash-lite,gemini-2.5-flash,"
-    "gemini-2.0-flash-lite,gemini-2.0-flash").split(",") if m.strip()]
+    "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash,"
+    "gemini-3.6-flash,gemini-2.5-flash-lite,gemini-2.5-flash,"
+    "gemini-flash-lite-latest").split(",") if m.strip()]
 if MODEL not in MODEL_CHAIN:
     MODEL_CHAIN.insert(0, MODEL)
 

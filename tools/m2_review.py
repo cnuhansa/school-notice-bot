@@ -21,7 +21,8 @@ from cuk_bot.collector import collect_board  # noqa: E402
 from cuk_bot.config import (BOARDS, BOARDS_BY_ID, DAILY_REQUEST_LIMIT,  # noqa: E402
                             MINUTE_REQUEST_LIMIT, MODEL, READ_IMAGES)
 from cuk_bot.content import resolve  # noqa: E402
-from cuk_bot.extractor import extract, make_client  # noqa: E402
+from cuk_bot.client import describe, make_client  # noqa: E402
+from cuk_bot.extractor import extract  # noqa: E402
 from cuk_bot.quota import QuotaExhausted, RequestBudget  # noqa: E402
 
 
@@ -91,8 +92,9 @@ def main():
     if not args.offline:
         budget = RequestBudget(con, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
                             model=MODEL)
-        print(f"Gemini 무료 한도: 오늘 {budget.used_today()}건 사용, "
-              f"잔여 {budget.remaining()}건")
+        print(f"자격증명: {describe()}")
+        print(f"한도: 오늘 {budget.used_today()}건 사용, "
+              f"잔여 {budget.remaining()}건 ({MODEL})")
         client = make_client()
 
     all_rows = []

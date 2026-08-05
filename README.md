@@ -11,7 +11,7 @@
 | 마일스톤 | 상태 |
 |---|---|
 | M1 파싱 검증 | ✅ 파서 PASS / ⚠️ 콘텐츠 이슈 → [docs/M1_RESULT.md](docs/M1_RESULT.md) |
-| M2 추출 검증 | 🔨 부분 검수 (18건 추출, 이미지 판독 1건 원문 대조 통과) — 30건 미달 |
+| M2 추출 검증 | 🔨 표본 32건 확보, **원문 대조 1건** → [docs/M2_RESULT.md](docs/M2_RESULT.md) |
 | M3 알림 | 🔨 코드 완료, 실발송 미검증 (텔레그램 토큰 대기) |
 | M4 운영 | ⬜ 미착수 |
 
@@ -51,8 +51,11 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | @BotFather 발급 |
 | `TELEGRAM_CHAT_ID` | ✅ | — | 수신자 chat id |
 | `CUK_DB` | | `cuk_notices.db` | SQLite 경로 |
-| `CUK_MODEL` | | `gemini-2.5-flash-lite` | 1순위 모델 |
-| `CUK_MODEL_CHAIN` | | flash-lite→flash→2.0 계열 | 한도 소진 시 넘어갈 모델 순서 |
+| `CUK_MODEL` | | `gemini-3.1-flash-lite` | 1순위 모델 |
+| `CUK_MODEL_CHAIN` | | 3.1→3.5→3.6→2.5→alias | 한도 소진 시 넘어갈 모델 순서 |
+| `CUK_VERTEX_CREDENTIALS` | | — | **테스트 전용** 서비스 계정 JSON 경로 (설정 시 Vertex, 과금) |
+| `CUK_VERTEX_PROJECT` | | JSON의 project_id | Vertex 프로젝트 override |
+| `CUK_VERTEX_LOCATION` | | `global` | Vertex 리전 |
 | `CUK_GEMINI_RPD` | | `180` | 일일 상한 초기 추정값 (API가 알려주면 교체됨) |
 | `CUK_GEMINI_RPM` | | `3` | 분당 상한 (로컬 가드) |
 | `CUK_NOTIFY_UNJUDGED` | | `1` | `0`이면 판정 불가 시 알림도 안 함 |
@@ -79,12 +82,28 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 |---|---|---|
 | `gemini-2.5-flash` | **20건** | 429 응답의 `quotaValue` |
 | `gemini-2.5-flash-lite` | **20건** | 429 응답의 `quotaValue` |
+| 그 외 | 미관측 | 첫 429에서 자동 학습 |
 
 하루 20~40건 올라오는 공지에 비해 모델 하나로는 턱없이 부족하다. **무료 한도는 모델별로 따로 잡히므로** 한 모델이 소진되면 다음 모델로 넘어간다(`CUK_MODEL_CHAIN`). 체인 전체가 소진돼야 판정을 포기한다.
 
 한도 판정은 두 겹이다. 로컬 카운터는 API를 두드리지 않기 위한 사전 차단이고, **실제 기준은 API가 돌려주는 429**다. 429의 `quotaValue`를 모델별로 저장해서 이후에는 추정값 대신 관측값을 쓴다.
 
 주의: 429의 `retryDelay`는 신뢰하면 안 된다. **일일 한도 소진인데도 "38초 후 재시도"를 준다.** 판정 근거는 `quotaId`의 `PerDay`/`PerMinute`다.
+
+## 모델 수명 (중요)
+
+**`gemini-2.5-*` 와 `gemini-2.0-*` 는 2026-10-16 종료 예정이다.** 그래서 체인 1순위를 `gemini-3.1-flash-lite` 로 두었고, 종료된 모델 이름은 `ModelUnavailable` 로 걸러 **다음 모델로 넘어갈 뿐 봇이 멈추지 않는다**. 체인 끝의 `gemini-flash-lite-latest` 별칭은 항상 현행 모델을 가리키므로 체인이 통째로 비는 상황을 막는다.
+
+Gemini 3.x 계열은 `thinking_budget=0` 을 거부한다. 모델별로 첫 호출에서 감지해 thinking 을 켜고 출력 예산을 4096 으로 올린다(2.5 는 끄고 1024). 하드코딩이 아니라 런타임 학습이라 새 모델 이름이 추가돼도 코드 수정이 필요 없다.
+
+## 운영 키 vs 테스트 키
+
+| 용도 | 자격증명 | 경로 | 비용 |
+|---|---|---|---|
+| 운영 | `GEMINI_API_KEY` (AI Studio) | Gemini Developer API | 무료 한도 |
+| 테스트 | `CUK_VERTEX_CREDENTIALS` (서비스 계정 JSON) | Vertex AI | **과금** |
+
+`CUK_VERTEX_CREDENTIALS` 가 설정돼 있으면 그쪽이 우선한다. 모든 실행이 시작 시 `자격증명: ...` 을 출력하므로 어느 쪽으로 돌고 있는지 항상 보인다. 운영 cron 에는 이 변수를 **설정하지 않는다**.
 
 ## 사용
 

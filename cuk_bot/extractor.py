@@ -13,6 +13,7 @@ import re
 import time
 from datetime import date
 
+from .client import CredentialError, make_client  # noqa: F401
 from .config import MODEL
 from .quota import QuotaExhausted, classify_quota_error, is_quota_error
 
@@ -56,6 +57,54 @@ IMAGE_HINT = """이 공지는 본문이 이미지로 게시되어 있다. 첨부
 
 class ExtractionError(RuntimeError):
     pass
+
+
+ExtractionError.__doc__ = "A failure confined to one notice."
+
+
+class ModelUnavailable(RuntimeError):
+    """The model name is not served — retired, renamed, or not on this key.
+
+    gemini-2.5-* retires 2026-10-16, so this has to be survivable: the caller
+    moves to the next model in the chain instead of failing the notice.
+    """
+
+
+# Gemini 3.x rejects thinking_budget=0 with INVALID_ARGUMENT, while 2.5 needs
+# it disabled or reasoning eats the output budget. Which family a model
+# belongs to is discovered on first use rather than hardcoded, so a new model
+# name does not need a code change.
+_THINKING_ALWAYS_ON = set()
+
+MAX_OUTPUT_WITHOUT_THINKING = 1024
+MAX_OUTPUT_WITH_THINKING = 4096  # gemini-3.6-flash spent 717 tokens thinking
+
+
+def _is_invalid_argument(exc) -> bool:
+    return (getattr(exc, "code", None) == 400
+            and "INVALID_ARGUMENT" in str(exc).upper())
+
+
+def _is_missing_model(exc) -> bool:
+    text = str(exc).upper()
+    return getattr(exc, "code", None) == 404 or "NOT_FOUND" in text
+
+
+def _make_config(model: str):
+    from google.genai import types
+
+    kwargs = dict(
+        system_instruction=SYSTEM,
+        response_mime_type="application/json",
+        response_schema=_response_schema(),
+        temperature=0.0,
+    )
+    if model in _THINKING_ALWAYS_ON:
+        kwargs["max_output_tokens"] = MAX_OUTPUT_WITH_THINKING
+    else:
+        kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        kwargs["max_output_tokens"] = MAX_OUTPUT_WITHOUT_THINKING
+    return types.GenerateContentConfig(**kwargs)
 
 
 # Constraining the reply removes the two ways the model used to break the
@@ -121,34 +170,15 @@ def _parse_json(raw: str) -> dict:
     return json.loads(text)
 
 
-def make_client(api_key: str = None):
-    """Build a Gemini Developer API client.
-
-    The key must be an AI Studio key: that is what carries the free tier. A
-    service-account credential would route to Vertex AI, which bills.
-    """
-    import os
-
-    from google import genai
-
-    key = api_key or os.environ.get("GEMINI_API_KEY") or \
-        os.environ.get("GOOGLE_API_KEY")
-    if not key:
-        raise ExtractionError(
-            "GEMINI_API_KEY 미설정 — aistudio.google.com 에서 발급하세요")
-    return genai.Client(api_key=key)
-
-
 def extract(item: dict, resolved: dict, client=None, budget=None,
             model: str = None) -> dict:
     """Call Gemini once, retrying a single time on malformed JSON.
 
-    Raises QuotaExhausted when the free allowance is gone so the caller can
-    fall back to notifying without a verdict. Any other failure raises
-    ExtractionError and only affects this one notice.
+    Raises QuotaExhausted when the free allowance is gone, and
+    ModelUnavailable when the model itself is gone, so the caller can move to
+    the next model. Any other failure raises ExtractionError and only affects
+    this one notice.
     """
-    from google.genai import types
-
     if budget is not None:
         budget.check()
         wait = budget.seconds_until_slot()
@@ -156,28 +186,16 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
             time.sleep(wait)
 
     client = client or make_client()
+    name = model or MODEL
     contents = _build_contents(build_prompt(item, resolved),
                                resolved.get("images") or [])
-    # gemini-2.5-flash reasons before answering, and those tokens come out of
-    # the same output budget. At 800 tokens the model spent 764 thinking and
-    # returned a JSON object cut off mid-string, so thinking is disabled and
-    # the budget raised: this is extraction, not a problem that needs a
-    # scratchpad.
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM,
-        response_mime_type="application/json",
-        response_schema=_response_schema(),
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-        temperature=0.0,
-        max_output_tokens=1024,
-    )
 
     last_error = None
     throttles = 0
     for attempt in (1, 2, 3, 4):
         try:
             resp = client.models.generate_content(
-                model=model or MODEL, contents=contents, config=config)
+                model=name, contents=contents, config=_make_config(name))
             if budget is not None:
                 budget.consume()
             return normalize(_parse_json(resp.text), resolved["source"])
@@ -187,6 +205,15 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
             last_error = f"json decode failed (attempt {attempt}): {exc}"
             continue
         except Exception as exc:
+            if _is_missing_model(exc):
+                raise ModelUnavailable(f"{name} 사용 불가 (종료·오타·권한)")
+
+            # Newer families require reasoning. Learn that and retry once
+            # with a budget large enough that the JSON is not truncated.
+            if _is_invalid_argument(exc) and name not in _THINKING_ALWAYS_ON:
+                _THINKING_ALWAYS_ON.add(name)
+                continue
+
             if not is_quota_error(exc):
                 last_error = f"api call failed (attempt {attempt}): {exc}"
                 break

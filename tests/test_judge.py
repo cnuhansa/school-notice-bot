@@ -6,6 +6,7 @@ from unittest import mock
 import support  # noqa: F401
 
 from cuk_bot import db, judge  # noqa: E402
+from cuk_bot.extractor import ModelUnavailable  # noqa: E402
 from cuk_bot.quota import QuotaExhausted  # noqa: E402
 
 VERDICT = {"is_actionable": True, "category": "기숙사", "one_line": "신청",
@@ -65,6 +66,22 @@ class ModelChain(unittest.TestCase):
         result, called = self.run_judge([throttled, VERDICT])
         self.assertEqual(result["one_line"], "신청")
         self.assertEqual(called.call_args.kwargs["model"], "second")
+
+    def test_a_retired_model_is_skipped_not_fatal(self):
+        """gemini-2.5-* retires 2026-10-16; the bot must outlive it."""
+        gone = ModelUnavailable("first 사용 불가")
+        result, called = self.run_judge([gone, VERDICT])
+
+        self.assertEqual(result["one_line"], "신청")
+        self.assertEqual(called.call_args.kwargs["model"], "second")
+        self.assertIn("first", self.judge.retired)
+
+    def test_every_model_retired_still_fails_open(self):
+        gone = ModelUnavailable("사용 불가")
+        result, _ = self.run_judge([gone, gone, gone])
+
+        self.assertIsInstance(result, QuotaExhausted)
+        self.assertIn("사용 가능한 모델 없음", str(result))
 
     def test_unjudged_record_is_committed_not_left_in_a_transaction(self):
         """An uncommitted row vanishes, taking the notice out of the queue."""

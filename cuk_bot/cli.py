@@ -12,6 +12,7 @@ import argparse
 import sys
 
 from . import db, notifier
+from .client import describe
 from .collector import collect
 from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
                      MODEL_CHAIN, NOTIFY_WHEN_UNJUDGED, READ_IMAGES)
@@ -85,6 +86,7 @@ def cmd_check(con, notify=True, log=print):
     log(f"새 글 {len(items)}건")
 
     session = Judge(con)
+    log(f"  자격증명: {describe()}")
     log(f"  모델별 잔여 한도 — {session.summary()}")
 
     for item in items:
@@ -133,6 +135,7 @@ def cmd_reextract(con, only_missing=True, log=print):
             "SELECT board_id, article_no FROM notices")]
 
     session = Judge(con)
+    log(f"  자격증명: {describe()}")
     log(f"재추출 대상 {len(targets)}건 — 잔여 {session.summary()}")
 
     for target in targets:
@@ -165,7 +168,8 @@ def cmd_status(con, log=print):
         log(f"  {row['board_id']:<18} {row['notices']:>8} "
             f"{row['extracted'] or 0:>10} {row['actionable'] or 0:>11}")
 
-    log("\n  모델별 무료 한도 (체인 순서)")
+    log(f"\n  자격증명: {describe()}")
+    log("  모델별 한도 (체인 순서)")
     for name in MODEL_CHAIN:
         budget = RequestBudget(con, DAILY_REQUEST_LIMIT,
                                MINUTE_REQUEST_LIMIT, model=name)

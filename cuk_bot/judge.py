@@ -12,7 +12,7 @@ does the bot stop judging — and even then it still notifies.
 
 from . import db
 from .config import (DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT, MODEL_CHAIN)
-from .extractor import extract, make_client
+from .extractor import ModelUnavailable, extract, make_client
 from .quota import QuotaExhausted, RequestBudget
 
 
@@ -31,6 +31,7 @@ class Judge:
         self.reason = None
         self._client = None
         self._exhausted = set()
+        self.retired = set()
 
     # ── resources ────────────────────────────────────────────
     @property
@@ -74,8 +75,18 @@ class Judge:
                 # so the next model in the chain is worth trying.
                 self._exhausted.add(name)
                 last = exc
+            except ModelUnavailable as exc:
+                # A retired model must not take the bot down with it: drop it
+                # for this run and carry on. gemini-2.5-* retires 2026-10-16.
+                self._exhausted.add(name)
+                self.retired.add(name)
+                last = exc
 
-        raise last or QuotaExhausted("모든 모델의 무료 한도 소진", scope="day")
+        if isinstance(last, QuotaExhausted):
+            raise last
+        raise QuotaExhausted(
+            f"사용 가능한 모델 없음 ({', '.join(sorted(self.retired)) or '원인 미상'})",
+            scope="day")
 
     def forward_unjudged(self, item: dict, reason: str) -> None:
         """Give up on judging this notice, but never on surfacing it.
