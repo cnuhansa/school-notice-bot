@@ -1,0 +1,62 @@
+name: backfill
+
+# 수동 전용. 스케줄이 없다 — 실수로 돌면 그 시점 이후의 새 공지가
+# 통째로 '읽음' 처리되어 조용히 사라진다.
+#
+# 최초 1회만 실행한다. 이걸 건너뛰고 check 를 켜면 기존 공지 100건 이상이
+# 한꺼번에 알림으로 나가고, 사용자는 봇을 뮤트한다.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "기존 공지를 모두 '읽음' 처리합니다. 진행하려면 backfill 입력"
+        required: true
+        default: ""
+
+concurrency:
+  group: cuk-bot-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 확인 문구 검증
+        # 파괴적이지는 않지만 되돌리려면 DB 를 지우고 다시 크롤링해야 한다.
+        if: ${{ inputs.confirm != 'backfill' }}
+        run: |
+          echo "확인 문구가 일치하지 않습니다. 'backfill' 을 입력하세요."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 기존 공지 읽음 처리
+        # 텔레그램 시크릿을 주지 않는다 — 이 단계는 어떤 알림도 보내지 않아야
+        # 하고, 넘기지 않는 편이 실수로 보내는 것보다 확실하다.
+        run: python -m cuk_bot --backfill
+
+      - name: 상태 저장 (DB 커밋)
+        run: |
+          git config user.name "cuk-notice-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git add -f cuk_notices.db
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 생략"
+            exit 0
+          fi
+          git commit -m "chore(state): backfill — 기존 공지 읽음 처리 [skip ci]"
+          git push || {
+            git pull --rebase --autostash
+            git push
+          }

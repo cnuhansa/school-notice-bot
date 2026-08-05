@@ -8,6 +8,9 @@ GitHub Actions (public repo). Vercel 무료 티어는 **불가**하다 — cron 
 |---|---|---|
 | `check.yml` | 24시간, 30분마다 | `*/30 * * * *` |
 | `digest.yml` | 매일 08:00 | `0 23 * * *` |
+| `backfill.yml` | 수동 전용 | — |
+
+`backfill` 은 스케줄이 없다. 실수로 돌면 그 시점 이후의 새 공지가 통째로 읽음 처리되어 조용히 사라지므로, 확인 문구를 입력해야 실행된다.
 
 `--check` 는 종일 실행이라 시간대 변환이 필요 없다. **`--digest` 만 주의**하면 된다: UTC 23시가 KST 다음 날 08시다.
 
@@ -48,9 +51,17 @@ HANDOFF §11.5 는 User-Agent 에 연락 가능한 이메일을 남기라고 한
 **순서를 어기면 알림 폭탄이 난다.**
 
 1. 시크릿 등록
-2. `--backfill` 1회 실행 (`workflow_dispatch` 로 수동) — 기존 공지를 읽음 처리
-3. 스케줄 활성화 확인
-4. 채널 테스트 메시지 삭제
+2. **워크플로를 비활성 상태로 둔다** — 레포 생성 직후 스케줄이 바로 돌면 3번 전에 알림이 나간다
+3. `backfill` 워크플로 수동 실행 (확인 문구 `backfill` 입력) — 기존 공지를 읽음 처리
+4. 커밋된 `cuk_notices.db` 확인
+5. `check` / `digest` 활성화
+6. 채널 테스트 메시지 삭제
+
+```bash
+gh workflow disable check --repo <repo>   # 2번
+gh workflow run backfill --repo <repo> -f confirm=backfill
+gh workflow enable check --repo <repo>    # 5번
+```
 
 ---
 
