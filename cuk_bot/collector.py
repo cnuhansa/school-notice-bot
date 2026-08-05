@@ -34,6 +34,17 @@ def collect_board(con, board: dict, limit: int = 15, mark_seen_only: bool = Fals
         con.commit()
         return []
 
+    # An empty listing is a parse failure, not a quiet board. These boards
+    # always carry 15+ notices, so zero means the school changed the markup
+    # and the selector stopped matching. Logging it as a success would let
+    # the bot report healthy while silently seeing nothing.
+    if not rows:
+        log(f"  [!] {board['name']} 목록 0건 — 파싱 실패로 간주")
+        db.log_crawl(con, board["id"], ok=False, count=0,
+                     error="목록 0건 (셀렉터 불일치 의심)")
+        con.commit()
+        return []
+
     log(f"  {board['name']}: {len(rows)}건 확인")
 
     fresh = []

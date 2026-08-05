@@ -59,6 +59,22 @@ MINUTE_REQUEST_LIMIT = int(os.environ.get("CUK_GEMINI_RPM", "3"))
 # deadline is not. Set to 0 to fall back to silence.
 NOTIFY_WHEN_UNJUDGED = os.environ.get("CUK_NOTIFY_UNJUDGED", "1") != "0"
 
+# USD per 1M tokens, (input, output). Used only to turn our own token counts
+# into a rough figure — remaining free credit is not readable through any API
+# (see docs/OPERATIONS.md), so self-metering is the only number we can get.
+#
+# Hand-maintained and therefore approximate: treat the output as an order of
+# magnitude, never as a bill. Unlisted models fall back to DEFAULT_PRICE.
+MODEL_PRICES = {
+    "gemini-3.1-flash-lite": (0.10, 0.40),
+    "gemini-3.5-flash-lite": (0.10, 0.40),
+    "gemini-3.5-flash": (0.30, 2.50),
+    "gemini-3.6-flash": (1.50, 7.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-2.5-flash": (0.30, 2.50),
+}
+DEFAULT_PRICE = (0.30, 2.50)
+
 # ─────────────────────────────────────────────────────────────
 # Content resolution (see cuk_bot/content.py, docs/M1_RESULT.md)
 # ─────────────────────────────────────────────────────────────

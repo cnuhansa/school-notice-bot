@@ -102,7 +102,8 @@ class RequestBudget:
         return max(0, self.daily_limit - self.used_today())
 
     # ── accounting ───────────────────────────────────────────
-    def _touch(self, used_delta: int = 0, blocked: bool = None) -> None:
+    def _touch(self, used_delta: int = 0, blocked: bool = None,
+               tokens: tuple = None) -> None:
         key = self._key()
         self.con.execute(
             "INSERT OR IGNORE INTO api_usage (day, model, used, blocked) "
@@ -111,6 +112,11 @@ class RequestBudget:
             self.con.execute(
                 "UPDATE api_usage SET used = used + ? WHERE day=? AND model=?",
                 (used_delta, *key))
+        if tokens:
+            self.con.execute(
+                "UPDATE api_usage SET tok_in = tok_in + ?, "
+                "tok_out = tok_out + ? WHERE day=? AND model=?",
+                (tokens[0], tokens[1], *key))
         if blocked is not None:
             self.con.execute(
                 "UPDATE api_usage SET blocked=? WHERE day=? AND model=?",
@@ -126,9 +132,15 @@ class RequestBudget:
             raise QuotaExhausted(
                 f"일일 요청 한도 도달 ({used}/{self.daily_limit})", scope="day")
 
-    def consume(self) -> None:
-        self._touch(used_delta=1)
+    def consume(self, tokens: tuple = None) -> None:
+        self._touch(used_delta=1, tokens=tokens)
         self._recent.append(datetime.now())
+
+    def tokens_today(self) -> tuple:
+        row = self.con.execute(
+            "SELECT tok_in, tok_out FROM api_usage WHERE day=? AND model=?",
+            self._key()).fetchone()
+        return (row["tok_in"], row["tok_out"]) if row else (0, 0)
 
     def mark_blocked(self) -> None:
         """Record that the API refused for quota reasons."""

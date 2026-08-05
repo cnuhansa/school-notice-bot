@@ -95,12 +95,53 @@ class MessageEscaping(unittest.TestCase):
 
 class Normalisation(unittest.TestCase):
     def test_confidence_is_clamped(self):
-        self.assertEqual(normalize({"confidence": 5}, "text")["confidence"], 1.0)
-        self.assertEqual(normalize({"confidence": "x"}, "text")["confidence"], 0.0)
+        # A deadline is supplied so the no-deadline cap does not interfere.
+        high = normalize({"confidence": 5, "apply_end": days_out(3)}, "text")
+        self.assertEqual(high["confidence"], 1.0)
+        junk = normalize({"confidence": "x", "apply_end": days_out(3)}, "text")
+        self.assertEqual(junk["confidence"], 0.0)
 
     def test_title_only_reads_cannot_be_confident(self):
-        self.assertEqual(
-            normalize({"confidence": 0.95}, "title")["confidence"], 0.4)
+        out = normalize({"confidence": 0.95, "apply_end": days_out(3)}, "title")
+        self.assertEqual(out["confidence"], 0.4)
+
+    def test_no_deadline_forces_low_confidence(self):
+        """Observed on a live 채용 공고: conf 0.9 with apply_end null.
+
+        High confidence suppresses the "마감일이 불확실합니다" caveat, so the
+        one alert that most needed the warning would not have carried it.
+        """
+        out = normalize({"is_actionable": True, "apply_end": None,
+                         "confidence": 0.9}, "text")
+        self.assertLessEqual(out["confidence"], 0.3)
+
+    def test_confidence_is_untouched_when_a_deadline_exists(self):
+        out = normalize({"is_actionable": True, "apply_end": days_out(5),
+                         "confidence": 0.9}, "text")
+        self.assertEqual(out["confidence"], 0.9)
+
+    def test_deadline_already_passed_is_forced_not_actionable(self):
+        """Decided in code, not by the prompt.
+
+        The model judged two near-identical 정기퇴사 notices differently, and
+        "is this date in the past" needs no judgement. Alerting about a closed
+        deadline is pure noise.
+        """
+        out = normalize({"is_actionable": True, "apply_end": days_out(-1),
+                         "confidence": 0.9}, "text")
+        self.assertFalse(out["is_actionable"])
+        self.assertTrue(out["expired"])
+
+    def test_today_deadline_is_still_actionable(self):
+        out = normalize({"is_actionable": True, "apply_end": days_out(0),
+                         "confidence": 0.9}, "text")
+        self.assertTrue(out["is_actionable"])
+
+    def test_missing_or_unparseable_deadline_is_left_alone(self):
+        for value in (None, "상시모집"):
+            out = normalize({"is_actionable": True, "apply_end": value,
+                             "confidence": 0.9}, "text")
+            self.assertTrue(out["is_actionable"], f"{value} 에서 오판")
 
     def test_null_like_strings_become_none(self):
         out = normalize({"apply_end": "null", "target": "미상"}, "text")

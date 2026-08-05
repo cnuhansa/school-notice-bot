@@ -7,14 +7,15 @@ sent to the model — until the free allowance runs out, at which point the
 caller forwards notices unjudged rather than dropping them.
 """
 
-import base64
 import json
 import re
 import time
-from datetime import date
+from datetime import date, datetime
 
 from .client import CredentialError, make_client  # noqa: F401
 from .config import MODEL
+from .prompt import (build_contents, build_prompt, make_config,
+                     mark_thinking_required)
 from .quota import QuotaExhausted, classify_quota_error, is_quota_error
 
 # Longest pause worth taking for a rate limit. A --check run fires every ten
@@ -22,45 +23,12 @@ from .quota import QuotaExhausted, classify_quota_error, is_quota_error
 MAX_THROTTLE_WAIT = 90
 MAX_THROTTLE_RETRIES = 2
 
-SYSTEM = (
-    "너는 대학교 공지사항에서 '학생이 기한 내에 해야 할 행동'을 뽑아내는 추출기다. "
-    "설명이나 마크다운 없이 JSON 객체 하나만 출력한다."
-)
-
-SCHEMA_BLOCK = """{
-  "is_actionable": true/false,
-  "category": "기숙사|장학|수강|등록|취업|교환학생|행사|일반",
-  "apply_start": "YYYY-MM-DD 또는 null",
-  "apply_end": "YYYY-MM-DDTHH:MM 또는 YYYY-MM-DD 또는 null",
-  "target": "대상자 요약 또는 null",
-  "method": "신청 방법 요약 또는 null",
-  "one_line": "무엇을 언제까지 해야 하는지 한 줄로",
-  "confidence": 0.0~1.0
-}"""
-
-RULES = """판정 기준:
-- is_actionable: 학생이 기한 내에 신청·제출·등록·납부 등 행동을 해야 하면 true.
-  단순 안내, 결과 발표, 변경 통보, 시설 점검·소독·공사 안내는 false.
-- 오늘 날짜는 {today}이다. "3월 14일"처럼 연도가 없으면 가장 가까운 미래로 해석한다.
-- 학사연도와 마감일을 혼동하지 마라. 예: "2026학년도 2학기 기숙사 모집"의 신청 마감이
-  2026-07-25라면 apply_end는 2026-07-25다. 2026학년도라는 표현에 끌려 연말 날짜를
-  적으면 안 된다.
-- confidence는 마감일 추출에 대한 확신도다. 마감일이 어디에도 없으면 apply_end는
-  null, confidence는 0.3 이하로 준다.
-- 본문이 비어 있고 제목만 주어졌다면 제목만으로 판정하되 confidence는 0.4를 넘기지
-  마라. 모집·신청 공고로 보이면 is_actionable은 true로 둔다. 놓치는 것이 잘못된
-  알림보다 나쁘다."""
-
-IMAGE_HINT = """이 공지는 본문이 이미지로 게시되어 있다. 첨부된 이미지를 읽고
-신청 기간과 대상을 찾아라. 이미지에서 날짜를 읽을 수 없으면 apply_end는 null이다."""
-
 
 class ExtractionError(RuntimeError):
     pass
 
 
 ExtractionError.__doc__ = "A failure confined to one notice."
-
 
 class ModelUnavailable(RuntimeError):
     """The model name is not served — retired, renamed, or not on this key.
@@ -74,11 +42,6 @@ class ModelUnavailable(RuntimeError):
 # it disabled or reasoning eats the output budget. Which family a model
 # belongs to is discovered on first use rather than hardcoded, so a new model
 # name does not need a code change.
-_THINKING_ALWAYS_ON = set()
-
-MAX_OUTPUT_WITHOUT_THINKING = 1024
-MAX_OUTPUT_WITH_THINKING = 4096  # gemini-3.6-flash spent 717 tokens thinking
-
 
 def _is_invalid_argument(exc) -> bool:
     return (getattr(exc, "code", None) == 400
@@ -89,78 +52,9 @@ def _is_missing_model(exc) -> bool:
     text = str(exc).upper()
     return getattr(exc, "code", None) == 404 or "NOT_FOUND" in text
 
-
-def _make_config(model: str):
-    from google.genai import types
-
-    kwargs = dict(
-        system_instruction=SYSTEM,
-        response_mime_type="application/json",
-        response_schema=_response_schema(),
-        temperature=0.0,
-    )
-    if model in _THINKING_ALWAYS_ON:
-        kwargs["max_output_tokens"] = MAX_OUTPUT_WITH_THINKING
-    else:
-        kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-        kwargs["max_output_tokens"] = MAX_OUTPUT_WITHOUT_THINKING
-    return types.GenerateContentConfig(**kwargs)
-
-
-# Constraining the reply removes the two ways the model used to break the
-# parser: prose around the JSON, and a field name it invented.
-def _response_schema():
-    from google.genai import types
-
-    text = types.Schema(type="STRING", nullable=True)
-    return types.Schema(
-        type="OBJECT",
-        properties={
-            "is_actionable": types.Schema(type="BOOLEAN"),
-            "category": types.Schema(type="STRING"),
-            "apply_start": text,
-            "apply_end": text,
-            "target": text,
-            "method": text,
-            "one_line": types.Schema(type="STRING"),
-            "confidence": types.Schema(type="NUMBER"),
-        },
-        required=["is_actionable", "category", "one_line", "confidence"],
-    )
-
-
-def build_prompt(item: dict, resolved: dict) -> str:
-    parts = [
-        "다음 대학교 공지사항을 아래 JSON 스키마로만 정리하라.",
-        "",
-        SCHEMA_BLOCK,
-        "",
-        RULES.format(today=date.today().isoformat()),
-    ]
-    if resolved["source"] == "image":
-        parts += ["", IMAGE_HINT]
-
-    parts += [
-        "",
-        f"[게시판] {item.get('board_name') or item.get('board_id')}",
-        f"[제목] {item['title']}",
-        f"[등록일] {item.get('posted_at') or '미상'}",
-        "[본문]",
-        resolved["text"].strip() or "(본문 텍스트 없음)",
-    ]
-    return "\n".join(parts)
-
-
-def _build_contents(prompt: str, images: list) -> list:
-    """Images first, then the instructions — Gemini follows the trailing text."""
-    from google.genai import types
-
-    contents = []
-    for img in images:
-        contents.append(types.Part.from_bytes(
-            data=base64.b64decode(img["data"]), mime_type=img["media_type"]))
-    contents.append(prompt)
-    return contents
+def _is_missing_model(exc) -> bool:
+    text = str(exc).upper()
+    return getattr(exc, "code", None) == 404 or "NOT_FOUND" in text
 
 
 def _parse_json(raw: str) -> dict:
@@ -187,7 +81,7 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
 
     client = client or make_client()
     name = model or MODEL
-    contents = _build_contents(build_prompt(item, resolved),
+    contents = build_contents(build_prompt(item, resolved),
                                resolved.get("images") or [])
 
     last_error = None
@@ -195,9 +89,9 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
     for attempt in (1, 2, 3, 4):
         try:
             resp = client.models.generate_content(
-                model=name, contents=contents, config=_make_config(name))
+                model=name, contents=contents, config=make_config(name))
             if budget is not None:
-                budget.consume()
+                budget.consume(tokens=_token_count(resp))
             return normalize(_parse_json(resp.text), resolved["source"])
         except json.JSONDecodeError as exc:
             if budget is not None:
@@ -210,8 +104,7 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
 
             # Newer families require reasoning. Learn that and retry once
             # with a budget large enough that the JSON is not truncated.
-            if _is_invalid_argument(exc) and name not in _THINKING_ALWAYS_ON:
-                _THINKING_ALWAYS_ON.add(name)
+            if _is_invalid_argument(exc) and mark_thinking_required(name):
                 continue
 
             if not is_quota_error(exc):
@@ -239,6 +132,29 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
     raise ExtractionError(last_error)
 
 
+def _token_count(resp) -> tuple:
+    """(input, output) tokens for one call, for self-metering.
+
+    Vertex bills real money and free-tier credit is not readable through any
+    API, so counting what we send is the only way to answer "how much did
+    that cost" with a number instead of a guess.
+    """
+    usage = getattr(resp, "usage_metadata", None)
+    if not usage:
+        return (0, 0)
+
+    def count(field):
+        try:
+            return int(getattr(usage, field, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    # Accounting must never break a verdict: a response with an odd or
+    # missing usage payload costs us a metric, not the notice.
+    return (count("prompt_token_count"),
+            count("candidates_token_count") + count("thoughts_token_count"))
+
+
 def normalize(data: dict, source: str) -> dict:
     """Coerce the model's output into the shape the rest of the code assumes."""
     out = dict(data)
@@ -258,5 +174,29 @@ def normalize(data: dict, source: str) -> dict:
     if source == "title":
         out["confidence"] = min(out["confidence"], 0.4)
 
+    # No deadline extracted means low confidence by definition. The prompt
+    # says so, but the model was observed returning 0.9 with apply_end=null
+    # on a 채용 공고 — which suppressed the "마감일이 불확실합니다" warning on
+    # exactly the alert that needed it.
+    if not out.get("apply_end"):
+        out["confidence"] = min(out["confidence"], 0.3)
+
+    # A deadline already past cannot be acted on, so alerting about it is
+    # pure noise. Enforced in code rather than in the prompt: the model was
+    # observed judging two near-identical 정기퇴사 notices differently, and a
+    # date comparison does not need judgement.
+    if out["is_actionable"] and _is_past(out.get("apply_end")):
+        out["is_actionable"] = False
+        out["expired"] = True
+
     out["source"] = source
     return out
+
+
+def _is_past(value) -> bool:
+    if not value:
+        return False
+    try:
+        return datetime.fromisoformat(str(value)).date() < date.today()
+    except (TypeError, ValueError):
+        return False

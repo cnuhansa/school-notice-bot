@@ -1,0 +1,58 @@
+name: digest
+
+# KST 08:00 = UTC 23:00 (전날). GitHub cron 은 UTC 전용이라 이 한 줄이
+# 시간대 변환이 필요한 유일한 곳이다 — 날짜가 하루 밀리는 데 주의.
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: cuk-bot-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 다이제스트 + 마감 리마인더
+        # 보낼 내용이 없어도 "오늘 새 공지 없음" 을 보낸다. 침묵은 사용자가
+        # 스스로 알아챌 수 없는 유일한 고장 유형이라, 매일 오는 메시지가
+        # 끊기는 것 자체를 신호로 쓴다.
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CUK_HEALTHCHECK_DIGEST_URL: ${{ secrets.CUK_HEALTHCHECK_DIGEST_URL }}
+        run: python -m cuk_bot --digest
+
+      - name: 상태 저장 (DB 커밋)
+        run: |
+          git config user.name "cuk-notice-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          # -f because .gitignore blanket-ignores *.db; staging first is what
+          # makes this work on the very first run, when the file is still
+          # untracked and `git diff` would report no change forever.
+          git add -f cuk_notices.db
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 생략"
+            exit 0
+          fi
+          git commit -m "chore(state): 다이제스트 발송 반영 [skip ci]"
+          git push || {
+            git pull --rebase --autostash
+            git push
+          }

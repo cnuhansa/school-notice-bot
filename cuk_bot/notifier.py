@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
+from . import db
 from .config import BOARDS_BY_ID
 
 REMINDER_KINDS = (("D-7", 7), ("D-3", 3), ("D-1", 1))
@@ -57,6 +58,43 @@ def send(text: str, log=print) -> bool:
     if not resp.ok:
         log(f"  [!] 텔레그램 발송 실패: {resp.text[:200]}")
     return resp.ok
+
+
+MAX_SEND_ATTEMPTS = 5
+
+
+def send_or_queue(con, text: str, kind: str, log=print) -> bool:
+    """Send, and park the message for retry if delivery fails.
+
+    Dropping a failed alert is unrecoverable — the extraction row is already
+    written, so nothing would ever retry it. One Telegram outage would
+    silently swallow a 모집 공고 notification.
+    """
+    if send(text, log=log):
+        return True
+    db.queue_message(con, kind, text, error="발송 실패")
+    log(f"  [!] 발송 실패 — outbox 에 보관({kind}), 다음 실행에서 재시도")
+    return False
+
+
+def flush_outbox(con, log=print) -> int:
+    """Retry parked messages. Returns how many finally got through."""
+    sent = 0
+    for row in db.pending_outbox(con, MAX_SEND_ATTEMPTS):
+        if send(row["body"], log=log):
+            db.drop_message(con, row["id"])
+            sent += 1
+        else:
+            db.bump_attempt(con, row["id"], error="재시도 실패")
+
+    if sent:
+        log(f"  ↻ 보류됐던 알림 {sent}건 재발송 완료")
+
+    stuck = db.stuck_messages(con, MAX_SEND_ATTEMPTS)
+    if stuck:
+        log(f"  [!] {stuck}건은 {MAX_SEND_ATTEMPTS}회 시도 후에도 발송 실패 "
+            f"— 자동 재시도 중단, 원인 확인 필요")
+    return sent
 
 
 def fmt_deadline(value: str) -> str:
@@ -125,6 +163,39 @@ def format_unjudged(items: list, reason: str) -> str:
         if board:
             lines.append(f"  <i>{board}</i>")
     lines += ["", "한도가 회복되면 <code>--reextract</code> 로 다시 판정합니다."]
+    return "\n".join(lines)
+
+
+def format_alive(healthy: int, total: int) -> str:
+    """The empty-day heartbeat.
+
+    Says explicitly that nothing needed doing, so the absence of this message
+    reads as a fault rather than as a calm day.
+    """
+    return "\n".join([
+        "☀️ <b>오늘 새 공지 없음</b>",
+        f"게시판 {healthy}/{total}곳 정상 수집 중입니다.",
+        "",
+        "<i>이 메시지가 안 오는 날은 봇에 문제가 생긴 것입니다.</i>",
+    ])
+
+
+def format_board_failure(board_ids: list, streak: int) -> str:
+    """Tell the channel a board stopped parsing.
+
+    A board that silently returns nothing is the failure the user cannot see
+    — everything looks normal, but that board's notices never arrive.
+    """
+    names = [_board_name({"board_id": b}) for b in board_ids]
+    lines = [
+        "🛠 <b>게시판 수집 실패</b>",
+        f"<i>{streak}회 연속 실패</i>",
+        "",
+        "아래 게시판을 읽지 못하고 있습니다. 학교 사이트 개편일 수 있습니다.",
+        "",
+    ]
+    lines += [f"• {esc(n)}" for n in names]
+    lines += ["", "해당 게시판은 <b>직접 확인</b>하세요."]
     return "\n".join(lines)
 
 

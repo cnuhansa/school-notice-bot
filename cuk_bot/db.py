@@ -68,7 +68,20 @@ CREATE TABLE IF NOT EXISTS api_usage (
     model   TEXT NOT NULL DEFAULT '',
     used    INTEGER NOT NULL DEFAULT 0,
     blocked INTEGER NOT NULL DEFAULT 0,  -- API itself reported quota spent
+    tok_in  INTEGER NOT NULL DEFAULT 0,
+    tok_out INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, model)
+);
+-- Messages that failed to send. Without this a single Telegram hiccup drops
+-- an alert permanently: the extraction row is already written, so nothing
+-- would ever try again.
+CREATE TABLE IF NOT EXISTS outbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,   -- alert | digest | unjudged | warning
+    body       TEXT NOT NULL,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    last_error TEXT
 );
 CREATE TABLE IF NOT EXISTS unjudged (
     board_id   TEXT NOT NULL,
@@ -83,10 +96,30 @@ CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_date, sent_at);
 """
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS does
+# nothing to a table that already exists, so a database carried forward — and
+# this one is committed to the repo and reused every run — would keep the old
+# shape and fail on the new column.
+MIGRATIONS = [
+    ("api_usage", "tok_in", "INTEGER NOT NULL DEFAULT 0"),
+    ("api_usage", "tok_out", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _migrate(con) -> None:
+    for table, column, spec in MIGRATIONS:
+        existing = {r["name"] for r in con.execute(
+            f"PRAGMA table_info({table})")}
+        if existing and column not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+    con.commit()
+
+
 def connect(path: str = None) -> sqlite3.Connection:
     con = sqlite3.connect(path or DB_PATH)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    _migrate(con)
     con.commit()
     return con
 
@@ -197,6 +230,38 @@ def mark_unjudged_alerted(con, rows: list) -> None:
 def clear_unjudged(con, board_id: str, article_no: str) -> None:
     con.execute("DELETE FROM unjudged WHERE board_id=? AND article_no=?",
                 (board_id, article_no))
+
+
+def queue_message(con, kind: str, body: str, error: str = None) -> None:
+    """Park a message that could not be delivered. Committed immediately."""
+    con.execute(
+        "INSERT INTO outbox (kind, body, attempts, created_at, last_error) "
+        "VALUES (?,?,1,?,?)", (kind, body, now(), error))
+    con.commit()
+
+
+def pending_outbox(con, max_attempts: int) -> list:
+    return [dict(r) for r in con.execute(
+        "SELECT id, kind, body, attempts FROM outbox WHERE attempts < ? "
+        "ORDER BY id", (max_attempts,))]
+
+
+def drop_message(con, message_id: int) -> None:
+    con.execute("DELETE FROM outbox WHERE id=?", (message_id,))
+    con.commit()
+
+
+def bump_attempt(con, message_id: int, error: str = None) -> None:
+    con.execute(
+        "UPDATE outbox SET attempts = attempts + 1, last_error=? WHERE id=?",
+        (error, message_id))
+    con.commit()
+
+
+def stuck_messages(con, max_attempts: int) -> int:
+    """Messages that exhausted their retries — surfaced, never auto-dropped."""
+    return con.execute("SELECT COUNT(*) FROM outbox WHERE attempts >= ?",
+                       (max_attempts,)).fetchone()[0]
 
 
 def log_crawl(con, board_id: str, ok: bool, count: int, error: str = None) -> None:

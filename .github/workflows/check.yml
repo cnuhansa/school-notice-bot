@@ -1,0 +1,61 @@
+name: check
+
+# 30분마다, 24시간. 종일 실행이라 UTC/KST 변환이 필요 없다 —
+# 시간대 제한을 두면 KST→UTC 변환에서 요일이 밀리는 실수가 생긴다.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+# 실행이 겹치면 두 프로세스가 같은 SQLite 를 쓰고 push 가 충돌한다.
+# 진행 중인 실행을 죽이지는 않는다 — 알림을 보내는 중일 수 있다.
+concurrency:
+  group: cuk-bot-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 새 공지 수집 및 알림
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CUK_HEALTHCHECK_URL: ${{ secrets.CUK_HEALTHCHECK_URL }}
+        run: python -m cuk_bot --check
+
+      - name: 상태 저장 (DB 커밋)
+        # 상태가 사라지면 다음 실행이 모든 공지를 새 글로 보고 알림 폭탄을 낸다.
+        # 커밋이 쌓이는 부수 효과로 레포가 활성 상태로 유지되는데, GitHub 이
+        # 60일 무활동 시 스케줄 워크플로를 조용히 끄기 때문에 이게 중요하다.
+        run: |
+          git config user.name "cuk-notice-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          # -f because .gitignore blanket-ignores *.db; staging first is what
+          # makes this work on the very first run, when the file is still
+          # untracked and `git diff` would report no change forever.
+          git add -f cuk_notices.db
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 생략"
+            exit 0
+          fi
+          git commit -m "chore(state): 수집 결과 반영 [skip ci]"
+          git push || {
+            echo "push 충돌 — rebase 후 1회 재시도"
+            git pull --rebase --autostash
+            git push
+          }

@@ -11,6 +11,10 @@
 **/*.pid
 **/*.db
 **/*.sqlite
+
+# 운영 상태 DB 는 예외 — GitHub Actions 가 실행마다 커밋해 보존한다.
+# 이게 없으면 매 실행이 모든 공지를 새 글로 보고 알림 폭탄을 낸다.
+!cuk_notices.db
 .env
 .env.*
 **/venv/

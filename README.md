@@ -11,9 +11,9 @@
 | 마일스톤 | 상태 |
 |---|---|
 | M1 파싱 검증 | ✅ 파서 PASS / ⚠️ 콘텐츠 이슈 → [docs/M1_RESULT.md](docs/M1_RESULT.md) |
-| M2 추출 검증 | 🔨 표본 32건 확보, **원문 대조 1건** → [docs/M2_RESULT.md](docs/M2_RESULT.md) |
+| M2 추출 검증 | 🔨 정확도 기준 충족(94%/100%), **검수 18/30건** → [docs/M2_RESULT.md](docs/M2_RESULT.md) |
 | M3 알림 | ✅ 실발송 검증 (알림·다이제스트·미판정 3종 채널 수신 확인) |
-| M4 운영 | ⬜ 미착수 |
+| M4 운영 | 🔨 워크플로·문서 완료, 배포 대기 → [docs/OPERATIONS.md](docs/OPERATIONS.md) |
 
 **M1 핵심 발견:** 학교가 공지를 PNG 스크린샷으로 올려서 본문 텍스트 확보율이 34%에 그친다. 기숙사 입퇴사공지는 0~25%다. 이미지 판독으로 대응한다.
 
@@ -26,8 +26,11 @@ cuk_bot/
   parser.py     목록·상세 파서 (div.b-content-box 확정)
   content.py    본문 → PDF → 스크린샷 → 제목 순 에스컬레이션
   extractor.py  Gemini 호출, 마감일 구조화 추출
+  prompt.py     프롬프트·요청 설정 (모델별 thinking 적응)
   quota.py      무료 한도 예산 관리, 429 분류(일일 vs 분당)
   judge.py      모델 체인 — 한도 소진 시 다음 모델로 승계
+  client.py     운영(AI Studio) / 테스트(Vertex) 자격증명 분리
+  health.py     하트비트 ping, 게시판 연속 실패 감지
   collector.py  게시판 순회, 새 글만 상세 진입
   notifier.py   텔레그램 발송, D-day, 리마인더 예약
   cli.py        커맨드
@@ -63,6 +66,8 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 | `CUK_CONTACT_EMAIL` | | — | User-Agent에 남길 연락처 |
 | `CUK_MAX_IMAGES` | | `3` | 공지당 판독할 이미지 수 |
 | `CUK_READ_IMAGES` | | `1` | `0`이면 이미지 판독 끄고 제목만 사용 |
+| `CUK_HEALTHCHECK_URL` | | — | `--check` 용 healthchecks.io ping URL |
+| `CUK_HEALTHCHECK_DIGEST_URL` | | — | `--digest` 용 (별도 모니터) |
 
 ### API 키 주의
 
@@ -142,14 +147,11 @@ python tools/m2_review.py --limit 4         # 추출 표본 검수
 python -m unittest discover -s tests        # 단위 테스트
 ```
 
-## cron
+## 운영
 
-```cron
-*/10 9-19 * * 1-5  cd /path/to/bot && python -m cuk_bot --check  >> check.log 2>&1
-0 8 * * *          cd /path/to/bot && python -m cuk_bot --digest >> digest.log 2>&1
-```
+GitHub Actions 로 돌린다 — `.github/workflows/`. 24시간 30분 간격 수집, 매일 08:00 다이제스트. **Vercel 무료 티어는 불가**(cron 하루 1회 + 파일시스템 휘발). 배포·장애 대응은 [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
-평일 09~19시로 제한하는 건 학교 서버 배려다. 병렬 요청은 구조적으로 불가능하게 해뒀다.
+침묵이 정상과 구분되지 않는 것이 이 봇의 가장 위험한 고장이라, 감지를 두 겹으로 뒀다 — 외부 감시(healthchecks.io)가 "죽었는지"를, `crawl_log` 가 "왜 죽었는지"를 맡는다. 새 공지가 없는 날에도 아침 메시지를 보내 **부재 자체가 신호**가 되게 했다.
 
 ## 주의
 

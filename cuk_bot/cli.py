@@ -11,10 +11,11 @@
 import argparse
 import sys
 
-from . import db, notifier
+from . import db, health, notifier
 from .client import describe
 from .collector import collect
-from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
+from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, DEFAULT_PRICE,
+                     MINUTE_REQUEST_LIMIT, MODEL_PRICES,
                      MODEL_CHAIN, NOTIFY_WHEN_UNJUDGED, READ_IMAGES)
 from .content import resolve
 from .judge import Judge
@@ -49,7 +50,8 @@ def _extract_and_route(con, item, session, notify=True, log=print):
 
     if data["is_actionable"]:
         if notify:
-            notifier.send(notifier.format_alert(item, data), log=log)
+            notifier.send_or_queue(
+                con, notifier.format_alert(item, data), "alert", log=log)
         queued = notifier.schedule_reminders(
             con, item["board_id"], item["article_no"], data.get("apply_end"))
         log(f"  🔔 {item['title'][:44]} — 마감 "
@@ -74,33 +76,62 @@ def _flush_unjudged(con, session, notify=True, log=print):
     if not notify:
         log(text)
         return
-    if notifier.send(text, log=log):
+    if notifier.send_or_queue(con, text, "unjudged", log=log):
         db.mark_unjudged_alerted(con, session.unjudged)
         con.commit()
     log(f"  ⚠ 미판정 {len(session.unjudged)}건 전달 완료")
 
 
+def _report_board_failures(con, notify=True, log=print):
+    """Tell the channel about boards that stopped parsing, once each."""
+    broken = health.new_failures(con)
+    if not broken:
+        return
+    log(f"  [!] 수집 실패 게시판: {', '.join(broken)}")
+    text = notifier.format_board_failure(broken, health.FAILURE_STREAK)
+    if notify:
+        notifier.send_or_queue(con, text, "warning", log=log)
+    for board_id in broken:
+        health.mark_warned(con, board_id)
+
+
 def cmd_check(con, notify=True, log=print):
-    log("새 글 수집 중...")
-    items = collect(con, log=log)
-    log(f"새 글 {len(items)}건")
+    health.ping("start")
+    try:
+        if notify:
+            notifier.flush_outbox(con, log=log)
 
-    session = Judge(con)
-    log(f"  자격증명: {describe()}")
-    log(f"  모델별 잔여 한도 — {session.summary()}")
+        log("새 글 수집 중...")
+        items = collect(con, log=log)
+        log(f"새 글 {len(items)}건")
 
-    for item in items:
-        if item.get("is_crosspost"):
-            log(f"  [dup] 재게시로 판단해 건너뜀: {item['title'][:44]}")
-            db.queue_digest(con, item["board_id"], item["article_no"])
-            continue
-        _extract_and_route(con, item, session, notify=notify, log=log)
+        session = Judge(con)
+        log(f"  자격증명: {describe()}")
+        log(f"  모델별 잔여 한도 — {session.summary()}")
 
-    _flush_unjudged(con, session, notify=notify, log=log)
-    con.commit()
+        for item in items:
+            if item.get("is_crosspost"):
+                log(f"  [dup] 재게시로 판단해 건너뜀: {item['title'][:44]}")
+                db.queue_digest(con, item["board_id"], item["article_no"])
+                continue
+            _extract_and_route(con, item, session, notify=notify, log=log)
+
+        _flush_unjudged(con, session, notify=notify, log=log)
+        _report_board_failures(con, notify=notify, log=log)
+        con.commit()
+    except Exception:
+        # The watchdog must hear about a crash, not just a missing ping —
+        # otherwise a run that dies fast looks identical to one never started.
+        health.ping("fail")
+        raise
+    health.ping("success")
 
 
 def cmd_digest(con, notify=True, log=print):
+    health.ping("start", env=health.DIGEST_URL_ENV)
+    if notify:
+        notifier.flush_outbox(con, log=log)
+
     notices = [dict(r) for r in con.execute("""
         SELECT n.title, n.url, p.board_id, p.article_no
         FROM pending_digest p
@@ -109,17 +140,19 @@ def cmd_digest(con, notify=True, log=print):
     """)]
     reminders = notifier.due_reminders(con)
 
-    text = notifier.format_digest(notices, reminders)
-    if not text:
-        log("발송할 내용 없음")
-        return
+    # Sent even when empty. Silence is the one failure mode the user cannot
+    # detect on their own: a dead bot and a quiet day look identical. A daily
+    # message that stops arriving is a signal they will notice.
+    text = notifier.format_digest(notices, reminders) or notifier.format_alive(
+        len(BOARDS_BY_ID) - len(health.failing_boards(con)), len(BOARDS_BY_ID))
 
-    if not notify or notifier.send(text, log=log):
+    if not notify or notifier.send_or_queue(con, text, "digest", log=log):
         con.execute("DELETE FROM pending_digest")
         for row in reminders:
             notifier.mark_reminder_sent(con, row)
         con.commit()
     log(f"다이제스트: 공지 {len(notices)}건, 리마인더 {len(reminders)}건")
+    health.ping("success", env=health.DIGEST_URL_ENV)
 
 
 def cmd_reextract(con, only_missing=True, log=print):
@@ -170,6 +203,7 @@ def cmd_status(con, log=print):
 
     log(f"\n  자격증명: {describe()}")
     log("  모델별 한도 (체인 순서)")
+    cost = 0.0
     for name in MODEL_CHAIN:
         budget = RequestBudget(con, DAILY_REQUEST_LIMIT,
                                MINUTE_REQUEST_LIMIT, model=name)
@@ -178,6 +212,23 @@ def cmd_status(con, log=print):
         state = " · 소진" if budget.is_blocked() else ""
         log(f"    {name:<24} {budget.used_today():>3}/{budget.daily_limit:<4}"
             f" 잔여 {budget.remaining():<4} ({source}){state}")
+
+        tok_in, tok_out = budget.tokens_today()
+        if tok_in or tok_out:
+            price_in, price_out = MODEL_PRICES.get(name, DEFAULT_PRICE)
+            spent = (tok_in * price_in + tok_out * price_out) / 1_000_000
+            cost += spent
+            log(f"      토큰 in {tok_in:,} / out {tok_out:,} → 약 ${spent:.4f}")
+
+    if cost:
+        # Only meaningful on the billed test project; the free tier costs
+        # nothing regardless of what this says.
+        log(f"    오늘 예상 비용 합계 ${cost:.4f} (참고용 추정 — 실제 청구서와 다를 수 있음)")
+
+    stuck = db.stuck_messages(con, notifier.MAX_SEND_ATTEMPTS)
+    pending = len(db.pending_outbox(con, notifier.MAX_SEND_ATTEMPTS))
+    if stuck or pending:
+        log(f"\n  미발송 알림: 재시도 대기 {pending}건, 재시도 포기 {stuck}건")
 
     waiting = con.execute(
         "SELECT COUNT(*) FROM unjudged u LEFT JOIN extractions e "
