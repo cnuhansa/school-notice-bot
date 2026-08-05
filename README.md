@@ -12,7 +12,7 @@
 |---|---|
 | M1 파싱 검증 | ✅ 파서 PASS / ⚠️ 콘텐츠 이슈 → [docs/M1_RESULT.md](docs/M1_RESULT.md) |
 | M2 추출 검증 | 🔨 표본 32건 확보, **원문 대조 1건** → [docs/M2_RESULT.md](docs/M2_RESULT.md) |
-| M3 알림 | 🔨 코드 완료, 실발송 미검증 (텔레그램 토큰 대기) |
+| M3 알림 | ✅ 실발송 검증 (알림·다이제스트·미판정 3종 채널 수신 확인) |
 | M4 운영 | ⬜ 미착수 |
 
 **M1 핵심 발견:** 학교가 공지를 PNG 스크린샷으로 올려서 본문 텍스트 확보율이 34%에 그친다. 기숙사 입퇴사공지는 0~25%다. 이미지 판독으로 대응한다.
@@ -49,7 +49,7 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 |---|---|---|---|
 | `GEMINI_API_KEY` | ✅ | — | LLM 추출 (**AI Studio 키**, 무료 한도) |
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | @BotFather 발급 |
-| `TELEGRAM_CHAT_ID` | ✅ | — | 수신자 chat id |
+| `TELEGRAM_CHAT_ID` | ✅ | — | 채널 chat id (채널은 `-100…` 형태) |
 | `CUK_DB` | | `cuk_notices.db` | SQLite 경로 |
 | `CUK_MODEL` | | `gemini-3.1-flash-lite` | 1순위 모델 |
 | `CUK_MODEL_CHAIN` | | 3.1→3.5→3.6→2.5→alias | 한도 소진 시 넘어갈 모델 순서 |
@@ -89,6 +89,20 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 한도 판정은 두 겹이다. 로컬 카운터는 API를 두드리지 않기 위한 사전 차단이고, **실제 기준은 API가 돌려주는 429**다. 429의 `quotaValue`를 모델별로 저장해서 이후에는 추정값 대신 관측값을 쓴다.
 
 주의: 429의 `retryDelay`는 신뢰하면 안 된다. **일일 한도 소진인데도 "38초 후 재시도"를 준다.** 판정 근거는 `quotaId`의 `PerDay`/`PerMinute`다.
+
+## 텔레그램 채널 연결
+
+채널로 보내려면 봇이 **채널 관리자**여야 하고 "메시지 게시" 권한이 있어야 한다. 구독자로만 추가하면 아무 이벤트도 받지 못한다.
+
+공개 채널이면 `getUpdates` 없이 바로 id를 얻을 수 있다.
+
+```bash
+curl -s "https://api.telegram.org/bot<TOKEN>/getChat?chat_id=@채널이름"
+```
+
+비공개 채널이면 봇을 관리자로 추가한 **뒤에** 메시지를 하나 올리고 `getUpdates` 의 `channel_post.chat.id` 를 쓴다. 봇 추가 이전 메시지는 잡히지 않는다.
+
+PowerShell 에서는 `curl` 이 `Invoke-WebRequest` 별칭이라 `-s` 가 통하지 않는다. `curl.exe` 로 부르거나 `Invoke-RestMethod` 를 쓴다.
 
 ## 모델 수명 (중요)
 
