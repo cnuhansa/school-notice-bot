@@ -1,10 +1,13 @@
 name: digest
 
-# KST 08:00 = UTC 23:00 (전날). GitHub cron 은 UTC 전용이라 이 한 줄이
+# KST 07:52 = UTC 22:52 (전날). GitHub cron 은 UTC 전용이라 이 한 줄이
 # 시간대 변환이 필요한 유일한 곳이다 — 날짜가 하루 밀리는 데 주의.
+#
+# 정각을 피해 :52 로 둔 이유는 두 가지다. 혼잡한 시각을 비켜가고, 지연이
+# 붙어도 "아침 8시쯤" 안에 도착한다 — 8시 정각에 걸면 지연 시 8시 반이 된다.
 on:
   schedule:
-    - cron: "0 23 * * *"
+    - cron: "52 22 * * *"
   workflow_dispatch:
 
 concurrency:
