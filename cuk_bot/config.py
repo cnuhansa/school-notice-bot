@@ -105,14 +105,18 @@ READ_IMAGES = os.environ.get("CUK_READ_IMAGES", "1") != "0"
 REQUEST_DELAY = float(os.environ.get("CUK_REQUEST_DELAY", "1.5"))
 REQUEST_TIMEOUT = 20
 
-# A reachable address makes the university IT team send an inquiry
-# instead of silently blocking the crawler.
-CONTACT_EMAIL = os.environ.get("CUK_CONTACT_EMAIL", "cnuhansa@gmail.com")
+# HANDOFF 11.5 asks for a reachable address so the university IT team sends an
+# inquiry instead of silently blocking the crawler. The client chose to run
+# without one (2026-08-05), accepting that trade. Left configurable so it can
+# be added later — never hardcoded, since this repository is public and a
+# committed address is a scrapable one.
+CONTACT_EMAIL = os.environ.get("CUK_CONTACT_EMAIL", "")
+
+_CONTACT = f"; contact: {CONTACT_EMAIL}" if CONTACT_EMAIL else ""
 
 HEADERS = {
     "User-Agent": (
-        f"CUK-Personal-Notice-Bot/0.1 "
-        f"(personal notice reminder; contact: {CONTACT_EMAIL})"
+        f"CUK-Personal-Notice-Bot/0.1 (personal notice reminder{_CONTACT})"
     ),
     "Accept-Language": "ko-KR,ko;q=0.9",
 }
