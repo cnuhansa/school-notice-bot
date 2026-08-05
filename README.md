@@ -31,6 +31,7 @@ cuk_bot/
   judge.py      모델 체인 — 한도 소진 시 다음 모델로 승계
   client.py     운영(AI Studio) / 테스트(Vertex) 자격증명 분리
   health.py     하트비트 ping, 게시판 연속 실패 감지
+  status.py     수집 상태·한도·토큰 비용 리포트
   collector.py  게시판 순회, 새 글만 상세 진입
   notifier.py   텔레그램 발송, D-day, 리마인더 예약
   cli.py        커맨드
@@ -132,7 +133,8 @@ python -m cuk_bot --check       # 새 글 수집 + 추출 + 즉시 알림
 python -m cuk_bot --digest      # 다이제스트 + D-7/3/1 리마인더
 python -m cuk_bot --dry-run     # 파싱 결과만 (LLM·텔레그램 미사용)
 python -m cuk_bot --reextract   # 저장 본문으로 재추출 (프롬프트 튜닝용)
-python -m cuk_bot --status      # 수집 상태와 파싱 실패 이력
+python -m cuk_bot --status      # 수집 상태·한도·예상 비용
+python -m cuk_bot --renormalize # 판정 규칙 재적용 (API 미사용)
 ```
 
 `--no-notify`를 붙이면 발송 없이 판정만 출력한다.

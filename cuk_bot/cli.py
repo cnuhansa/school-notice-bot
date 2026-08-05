@@ -6,18 +6,21 @@
   python -m cuk_bot --digest      다이제스트 + 리마인더 발송
   python -m cuk_bot --reextract   저장된 본문으로 재추출 (프롬프트 튜닝용)
   python -m cuk_bot --status      수집 상태와 파싱 실패 이력
+  python -m cuk_bot --renormalize 판정 규칙 재적용 (API 미사용)
 """
 
 import argparse
 import sys
 
-from . import db, health, notifier
+import json
+
+from . import db, health, notifier, status
 from .client import describe
 from .collector import collect
-from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, DEFAULT_PRICE,
-                     MINUTE_REQUEST_LIMIT, MODEL_PRICES,
+from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
                      MODEL_CHAIN, NOTIFY_WHEN_UNJUDGED, READ_IMAGES)
 from .content import resolve
+from .extractor import normalize
 from .judge import Judge
 from .quota import QuotaExhausted, RequestBudget
 
@@ -195,64 +198,32 @@ def cmd_reextract(con, only_missing=True, log=print):
 
 
 def cmd_status(con, log=print):
-    rows = con.execute("""
-        SELECT n.board_id, COUNT(*) AS notices,
-               SUM(CASE WHEN e.article_no IS NOT NULL THEN 1 ELSE 0 END) AS extracted,
-               SUM(CASE WHEN e.is_actionable = 1 THEN 1 ELSE 0 END) AS actionable
-        FROM notices n
-        LEFT JOIN extractions e ON e.board_id = n.board_id
-                               AND e.article_no = n.article_no
-        GROUP BY n.board_id ORDER BY n.board_id
-    """).fetchall()
+    status.report(con, log=log)
 
-    log(f"  {'board':<18} {'notices':>8} {'extracted':>10} {'actionable':>11}")
-    for row in rows:
-        log(f"  {row['board_id']:<18} {row['notices']:>8} "
-            f"{row['extracted'] or 0:>10} {row['actionable'] or 0:>11}")
 
-    log(f"\n  자격증명: {describe()}")
-    log("  모델별 한도 (체인 순서)")
-    cost = 0.0
-    for name in MODEL_CHAIN:
-        budget = RequestBudget(con, DAILY_REQUEST_LIMIT,
-                               MINUTE_REQUEST_LIMIT, model=name)
-        observed = budget.observed_limit()
-        source = f"API 관측 {observed}" if observed else "미관측"
-        state = " · 소진" if budget.is_blocked() else ""
-        log(f"    {name:<24} {budget.used_today():>3}/{budget.daily_limit:<4}"
-            f" 잔여 {budget.remaining():<4} ({source}){state}")
+def cmd_renormalize(con, log=print):
+    """Re-apply the judgement rules to stored replies. No API calls.
 
-        tok_in, tok_out = budget.tokens_today()
-        if tok_in or tok_out:
-            price_in, price_out = MODEL_PRICES.get(name, DEFAULT_PRICE)
-            spent = (tok_in * price_in + tok_out * price_out) / 1_000_000
-            cost += spent
-            log(f"      토큰 in {tok_in:,} / out {tok_out:,} → 약 ${spent:.4f}")
-
-    if cost:
-        # Only meaningful on the billed test project; the free tier costs
-        # nothing regardless of what this says.
-        log(f"    오늘 예상 비용 합계 ${cost:.4f} (참고용 추정 — 실제 청구서와 다를 수 있음)")
-
-    stuck = db.stuck_messages(con, notifier.MAX_SEND_ATTEMPTS)
-    pending = len(db.pending_outbox(con, notifier.MAX_SEND_ATTEMPTS))
-    if stuck or pending:
-        log(f"\n  미발송 알림: 재시도 대기 {pending}건, 재시도 포기 {stuck}건")
-
-    waiting = con.execute(
-        "SELECT COUNT(*) FROM unjudged u LEFT JOIN extractions e "
-        "ON e.board_id=u.board_id AND e.article_no=u.article_no "
-        "WHERE e.article_no IS NULL").fetchone()[0]
-    if waiting:
-        log(f"  미판정 {waiting}건 — 한도 회복 후 --reextract 로 판정하세요")
-
-    failures = db.failure_counts(con)
-    if failures:
-        log("\n  파싱 실패 이력 (최근 120일):")
-        for row in failures:
-            log(f"    {row['board_id']:<18} {row['failures']}회")
-    else:
-        log("\n  파싱 실패 없음")
+    When a rule in normalize() changes, every verdict already in the database
+    is stale. Re-extracting would mean paying for answers we already have, so
+    the stored raw reply is re-judged instead.
+    """
+    updated = 0
+    for row in con.execute("SELECT board_id, article_no, source, payload, "
+                           "is_actionable, confidence FROM extractions").fetchall():
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, ValueError):
+            continue
+        fresh = normalize(payload, row["source"])
+        if (bool(row["is_actionable"]) == fresh["is_actionable"]
+                and abs((row["confidence"] or 0) - fresh["confidence"]) < 1e-9):
+            continue
+        db.save_extraction(con, row["board_id"], row["article_no"], fresh,
+                           row["source"])
+        updated += 1
+    con.commit()
+    log(f"판정 갱신 {updated}건 (API 호출 없음)")
 
 
 def main(argv=None):
@@ -267,6 +238,8 @@ def main(argv=None):
     ap.add_argument("--status", action="store_true", help="수집 상태 요약")
     ap.add_argument("--reset-quota", action="store_true",
                     help="오늘의 한도 소진 표시 해제")
+    ap.add_argument("--renormalize", action="store_true",
+                    help="저장된 응답에 판정 규칙 재적용 (API 미사용)")
     ap.add_argument("--no-notify", action="store_true", help="발송 없이 출력만")
     args = ap.parse_args(argv)
 
@@ -286,6 +259,8 @@ def main(argv=None):
         cmd_reextract(con, only_missing=not args.all)
     elif args.status:
         cmd_status(con)
+    elif args.renormalize:
+        cmd_renormalize(con)
     elif args.reset_quota:
         for name in MODEL_CHAIN:
             RequestBudget(con, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,

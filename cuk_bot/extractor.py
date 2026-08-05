@@ -156,8 +156,15 @@ def _token_count(resp) -> tuple:
 
 
 def normalize(data: dict, source: str) -> dict:
-    """Coerce the model's output into the shape the rest of the code assumes."""
+    """Coerce the model's output into the shape the rest of the code assumes.
+
+    The untouched reply is kept under "raw" so the rules below can be revised
+    and re-applied later without paying to extract everything again — which
+    is the whole reason HANDOFF section 7 stores the payload verbatim.
+    """
+    raw = data.get("raw") or {k: v for k, v in data.items() if k != "raw"}
     out = dict(data)
+    out["raw"] = raw
     out["is_actionable"] = bool(data.get("is_actionable"))
 
     try:
