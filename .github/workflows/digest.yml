@@ -43,7 +43,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CUK_HEALTHCHECK_DIGEST_URL: ${{ secrets.CUK_HEALTHCHECK_DIGEST_URL }}
+          # 워치독 핑 중지 (check.yml 과 같은 이유, 2026-09-26).
+          # 되살리려면 이 줄을 복원한다: CUK_HEALTHCHECK_DIGEST_URL
         run: python -m cuk_bot --digest
 
       - name: 상태 저장 (DB 커밋)
