@@ -67,8 +67,8 @@ pip install requests beautifulsoup4 google-genai pillow pymupdf
 | `CUK_CONTACT_EMAIL` | | — | User-Agent에 남길 연락처 |
 | `CUK_MAX_IMAGES` | | `3` | 공지당 판독할 이미지 수 |
 | `CUK_READ_IMAGES` | | `1` | `0`이면 이미지 판독 끄고 제목만 사용 |
-| `CUK_HEALTHCHECK_URL` | | — | `--check` 용 healthchecks.io ping URL |
-| `CUK_HEALTHCHECK_DIGEST_URL` | | — | `--digest` 용 (별도 모니터) |
+| `CUK_HEALTHCHECK_URL` | | — | `--check` 용 healthchecks.io ping URL. **현재 워크플로우에서 안 넘긴다**(docs/OPERATIONS.md §핵심 원칙) |
+| `CUK_HEALTHCHECK_DIGEST_URL` | | — | `--digest` 용. 상동 |
 
 ### API 키 주의
 
@@ -153,7 +153,7 @@ python -m unittest discover -s tests        # 단위 테스트
 
 GitHub Actions 로 돌린다 — `.github/workflows/`. 24시간 30분 간격 수집, 매일 08:00 다이제스트. **Vercel 무료 티어는 불가**(cron 하루 1회 + 파일시스템 휘발). 배포·장애 대응은 [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
-침묵이 정상과 구분되지 않는 것이 이 봇의 가장 위험한 고장이라, 감지를 두 겹으로 뒀다 — 외부 감시(healthchecks.io)가 "죽었는지"를, `crawl_log` 가 "왜 죽었는지"를 맡는다. 새 공지가 없는 날에도 아침 메시지를 보내 **부재 자체가 신호**가 되게 했다.
+침묵이 정상과 구분되지 않는 것이 이 봇의 가장 위험한 고장이라, 감지를 두 겹으로 뒀다 — 외부 감시(healthchecks.io)가 "죽었는지"를, `crawl_log` 가 "왜 죽었는지"를 맡는다. 외부 감시는 2026-09-26 에 껐다(오탐 메일만 나왔다 — docs/OPERATIONS.md 참조). 새 공지가 없는 날에도 아침 메시지를 보내 **부재 자체가 신호**가 되게 했다.
 
 ## 원본 명세서
 

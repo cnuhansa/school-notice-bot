@@ -43,7 +43,11 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CUK_HEALTHCHECK_URL: ${{ secrets.CUK_HEALTHCHECK_URL }}
+          # 외부 워치독(healthchecks.io) 핑은 2026-09-26 에 껐다. URL 이 없으면
+          # health.ping() 이 조용히 False 를 돌려주므로 코드는 그대로 둔다.
+          # 이유: GitHub 이 이 30분 스케줄을 하루 5~8회만 실행해서, 봇이 멀쩡한데도
+          # grace 4시간을 넘기는 공백이 상시 생겼다 → DOWN/UP 메일만 하루 4~5통.
+          # 되살리려면 이 줄을 복원한다: CUK_HEALTHCHECK_URL
         run: python -m cuk_bot --check
 
       - name: 상태 저장 (DB 커밋)

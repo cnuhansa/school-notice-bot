@@ -9,6 +9,7 @@
 
 | H4 | **Vertex 크레딧 확인 + 예산 알림** | 콘솔 전용. 결제 → 크레딧에서 잔액·만료일 확인, 월 $1 예산 알림 설정 |
 | H5 | **healthchecks 기본 모니터 `My First Check` 삭제** | 가입 시 자동 생성된 샘플. ping 이 없어 **약 25시간 뒤 오탐 DOWN 경고**가 온다 |
+| H6 | **healthchecks 모니터 `cuk-bot check`·`cuk-bot digest` 일시정지 또는 삭제** | 2026-09-26 에 워크플로우에서 ping 을 껐다. 모니터를 그대로 두면 마지막 DOWN 메일 1통이 더 오고 계속 down 으로 남는다. 대시보드 전용 작업 |
 
 ## 코드 작업
 
