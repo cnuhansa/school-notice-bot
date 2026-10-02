@@ -159,7 +159,8 @@ def format_unjudged(items: list, reason: str) -> str:
     ]
     for item in items:
         board = esc(_board_name(item))
-        lines.append(f'• <a href="{item["url"]}">{esc(item["title"][:60])}</a>')
+        lines.append(f'• <a href="{item["url"]}">'
+                     f'{esc((item.get("title") or "")[:60])}</a>')
         if board:
             lines.append(f"  <i>{board}</i>")
     lines += ["", "한도가 회복되면 <code>--reextract</code> 로 다시 판정합니다."]
@@ -187,7 +188,7 @@ def format_catchup(rows: list, month: str) -> str:
             lines.append(f"<b>{esc(name)}</b>")
         mark = "🔔 " if row.get("is_actionable") else ""
         posted = (row.get("posted_at") or "")[5:]
-        lines.append(f'{mark}<a href="{row["url"]}">{esc(row["title"][:52])}</a>'
+        lines.append(f'{mark}<a href="{row["url"]}">{esc((row.get("title") or "")[:52])}</a>'
                      f' <i>{esc(posted)}</i>')
 
     lines += ["", "마감이 지난 것도 있으니 날짜를 확인하세요. "
@@ -233,14 +234,15 @@ def format_digest(notices: list, reminders: list) -> str:
     if notices:
         lines.append("📰 <b>어제의 공지</b>")
         for row in notices:
-            lines.append(f'• <a href="{row["url"]}">{esc(row["title"][:60])}</a>')
+            lines.append(f'• <a href="{row["url"]}">'
+                         f'{esc((row.get("title") or "")[:60])}</a>')
 
     if reminders:
         if lines:
             lines.append("")
         lines.append("⏰ <b>마감 임박</b>")
         for row in reminders:
-            headline = row["one_line"] or row["title"][:50]
+            headline = row["one_line"] or (row["title"] or "")[:50]
             lines.append(f'• <b>{esc(row["kind"])}</b> {esc(headline)}')
             lines.append(f'  마감 {esc(fmt_deadline(row["apply_end"]))} · '
                          f'<a href="{row["url"]}">바로가기</a>')

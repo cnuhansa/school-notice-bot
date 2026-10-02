@@ -26,6 +26,17 @@ from .judge import Judge
 from .quota import QuotaExhausted, RequestBudget
 
 
+def _title(item: dict) -> str:
+    """A title that is always a string.
+
+    parse_detail can return None for a field it could not find, and a None
+    title used to crash the log line that reported the notice. The listing
+    is now authoritative so this should not happen — this keeps a future
+    regression from taking the run down with it.
+    """
+    return item.get("title") or "(제목 없음)"
+
+
 def _extract_and_route(con, item, session, notify=True, log=print):
     """Extract one notice, then either alert immediately or queue a digest.
 
@@ -40,11 +51,11 @@ def _extract_and_route(con, item, session, notify=True, log=print):
         data = session.judge(item, resolved)
     except QuotaExhausted as exc:
         session.forward_unjudged(item, str(exc))
-        log(f"  ⚠ 한도 소진 — 판정 없이 전달: {item['title'][:40]}")
+        log(f"  ⚠ 한도 소진 — 판정 없이 전달: {_title(item)[:40]}")
         return None
     except Exception as exc:
         session.forward_unjudged(item, f"추출 실패: {str(exc)[:100]}")
-        log(f"  ⚠ 추출 실패 — 판정 없이 전달 ({item['title'][:30]}): "
+        log(f"  ⚠ 추출 실패 — 판정 없이 전달 ({_title(item)[:30]}): "
             f"{str(exc)[:80]}")
         return None
 
@@ -58,11 +69,11 @@ def _extract_and_route(con, item, session, notify=True, log=print):
                 con, notifier.format_alert(item, data), "alert", log=log)
         queued = notifier.schedule_reminders(
             con, item["board_id"], item["article_no"], data.get("apply_end"))
-        log(f"  🔔 {item['title'][:44]} — 마감 "
+        log(f"  🔔 {_title(item)[:44]} — 마감 "
             f"{notifier.fmt_deadline(data.get('apply_end'))}, 리마인더 {queued}건")
     else:
         db.queue_digest(con, item["board_id"], item["article_no"])
-        log(f"  · 다이제스트 대기: {item['title'][:44]}")
+        log(f"  · 다이제스트 대기: {_title(item)[:44]}")
 
     con.commit()
     return data
@@ -114,11 +125,22 @@ def cmd_check(con, notify=True, log=print):
         log(f"  모델별 잔여 한도 — {session.summary()}")
 
         for item in items:
-            if item.get("is_crosspost"):
-                log(f"  [dup] 재게시로 판단해 건너뜀: {item['title'][:44]}")
-                db.queue_digest(con, item["board_id"], item["article_no"])
-                continue
-            _extract_and_route(con, item, session, notify=notify, log=log)
+            # One malformed notice must not end the run. Before this guard a
+            # single unexpected value aborted cmd_check, so the remaining new
+            # notices went unprocessed AND the DB commit step was skipped —
+            # the next run then re-read the same notice and died again.
+            # Anything we cannot route is forwarded unjudged, which is the
+            # same promise the extraction path already makes.
+            try:
+                if item.get("is_crosspost"):
+                    log(f"  [dup] 재게시로 판단해 건너뜀: {_title(item)[:44]}")
+                    db.queue_digest(con, item["board_id"], item["article_no"])
+                    continue
+                _extract_and_route(con, item, session, notify=notify, log=log)
+            except Exception as exc:
+                log(f"  [!] 처리 실패 — 판정 없이 전달 "
+                    f"({_title(item)[:30]}): {str(exc)[:80]}")
+                session.forward_unjudged(item, f"처리 실패: {str(exc)[:100]}")
 
         _flush_unjudged(con, session, notify=notify, log=log)
         _report_board_failures(con, notify=notify, log=log)

@@ -111,21 +111,6 @@ HTML = """
 """
 
 
-HTML = """
-<table><tr>
-  <td><a href="?mode=view&articleNo=100">[K관] 모집 공고</a></td>
-  <td>2026.07.31</td>
-</tr><tr>
-  <td><a href="?mode=view&articleNo=100">[K관] 모집 공고</a></td>
-  <td>2026.07.31</td>
-</tr></table>
-<div class="b-content-box"><p>본문 텍스트</p>
-  <img src="/_attach/a.png"/></div>
-<div class="b-file-box"><a class="file-down-btn hwp"
-   href="?mode=download&articleNo=100&attachNo=1">신청서.hwp 다운로드</a></div>
-"""
-
-
 class Parsing(unittest.TestCase):
     def setUp(self):
         self.board = {"id": "b", "name": "게시판",
@@ -177,6 +162,68 @@ class ContentResolution(unittest.TestCase):
         out = resolve(detail)
         self.assertIn("입사신청서.hwp", out["text"])
         self.assertTrue(any("hwp" in n for n in out["notes"]))
+
+# A detail page that carries a body but none of the metadata selectors. Real
+# example: 국제교류처 renders some notices without p.b-title.
+DETAIL_WITHOUT_META = """
+<div class="b-content-box"><p>본문만 있는 상세 페이지</p></div>
+"""
+
+
+class ListingIsAuthoritative(unittest.TestCase):
+    """The detail page must not blank out what the listing already knew.
+
+    parse_detail returns None for every field it cannot find. Merging it over
+    the listing row turned a good title into None, and the next log line —
+    item['title'][:44] — raised TypeError and killed the whole run, leaving
+    the remaining notices unprocessed and the database uncommitted.
+    """
+
+    def setUp(self):
+        self.con = db.connect(":memory:")
+        self.board = {"id": "b", "name": "게시판", "url": "http://x/b.do"}
+
+    def collect(self, detail_html):
+        with mock.patch.object(collector, "http_get",
+                               side_effect=[HTML, detail_html]):
+            return collector.collect_board(self.con, self.board,
+                                           log=lambda _: None)
+
+    def test_title_survives_a_detail_page_without_one(self):
+        fresh = self.collect(DETAIL_WITHOUT_META)
+
+        self.assertEqual(len(fresh), 1)
+        self.assertEqual(fresh[0]["title"], "[K관] 모집 공고")
+
+    def test_posted_date_survives_too(self):
+        fresh = self.collect(DETAIL_WITHOUT_META)
+        self.assertEqual(fresh[0]["posted_at"], "2026-07-31")
+
+    def test_body_still_comes_from_the_detail_page(self):
+        """The listing must win on metadata without starving the item."""
+        fresh = self.collect(DETAIL_WITHOUT_META)
+        self.assertIn("본문만 있는 상세", fresh[0]["body"])
+
+    def test_detail_fills_a_date_the_listing_lacked(self):
+        """Filling a gap is still allowed — only overwriting is not."""
+        listing = ('<table><tr><td><a href="?mode=view&articleNo=100">'
+                   '날짜 없는 공지</a></td></tr></table>')
+        detail = ('<div class="b-etc-box">등록일 : 2026.08.09</div>'
+                  '<div class="b-content-box">본문</div>')
+        with mock.patch.object(collector, "http_get",
+                               side_effect=[listing, detail]):
+            fresh = collector.collect_board(self.con, self.board,
+                                            log=lambda _: None)
+
+        self.assertEqual(fresh[0]["posted_at"], "2026-08-09")
+
+    def test_in_memory_item_matches_what_was_stored(self):
+        """save_notice already used the listing title; the item now agrees."""
+        fresh = self.collect(DETAIL_WITHOUT_META)
+        stored = db.load_notice(self.con, "b", "100")
+
+        self.assertEqual(fresh[0]["title"], stored["title"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
