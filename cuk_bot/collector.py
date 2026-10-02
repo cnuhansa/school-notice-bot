@@ -70,13 +70,21 @@ def collect_board(con, board: dict, limit: int = 15, mark_seen_only: bool = Fals
 
         db.save_notice(con, board["id"], row, detail)
         if not mark_seen_only:
-            fresh.append({
-                **row,
+            # The listing is authoritative for title, url and date, and
+            # save_notice already stores it that way. parse_detail returns
+            # None for every field it cannot find on the detail page, so
+            # merging it last blanked out a good title — and the next log
+            # line, item["title"][:44], died on None and took the rest of
+            # the run with it. Detail may still fill what the listing left
+            # empty; it may not overwrite what the listing had.
+            item = dict(detail)
+            item.update({k: v for k, v in row.items() if v is not None})
+            item.update({
                 "board_id": board["id"],
                 "board_name": board["name"],
                 "is_crosspost": crosspost,
-                **detail,
             })
+            fresh.append(item)
 
     db.log_crawl(con, board["id"], ok=True, count=len(rows))
     con.commit()

@@ -176,5 +176,63 @@ class Heartbeat(unittest.TestCase):
         self.assertIn("문제가 생긴 것", text)
 
 
+class OneBadNoticeDoesNotEndTheRun(unittest.TestCase):
+    """A single unroutable notice must not abort cmd_check.
+
+    It did: an exception in the routing path escaped the loop, so the
+    remaining new notices were never processed and the workflow's DB commit
+    step was skipped. The next run re-read the same notice and died at the
+    same place, which is why the same failure repeated across days.
+    """
+
+    def setUp(self):
+        self.con = db.connect(":memory:")
+        self.items = [
+            {"board_id": "b", "article_no": "1", "title": "터지는 공지",
+             "url": "http://x/1", "board_name": "게시판"},
+            {"board_id": "b", "article_no": "2", "title": "멀쩡한 공지",
+             "url": "http://x/2", "board_name": "게시판"},
+        ]
+
+    def run_check(self, side_effect):
+        with mock.patch.object(cli, "collect", return_value=self.items),              mock.patch.object(cli, "Judge") as judge_cls,              mock.patch.object(cli, "_extract_and_route",
+                               side_effect=side_effect) as routed:
+            judge_cls.return_value = mock.MagicMock(
+                unjudged=[], reason=None, summary=lambda: "")
+            cli.cmd_check(self.con, notify=False, log=lambda _: None)
+            return routed, judge_cls.return_value
+
+    def test_remaining_notices_are_still_processed(self):
+        routed, _ = self.run_check([RuntimeError("boom"), None])
+
+        self.assertEqual(len(routed.call_args_list), 2,
+                         "첫 공지에서 터지고 나머지가 버려짐")
+
+    def test_the_failed_notice_is_forwarded_not_dropped(self):
+        _, session = self.run_check([RuntimeError("boom"), None])
+
+        session.forward_unjudged.assert_called_once()
+        self.assertIs(session.forward_unjudged.call_args.args[0],
+                      self.items[0])
+
+    def test_the_run_itself_succeeds(self):
+        """cmd_check must return normally so the DB commit step still runs."""
+        try:
+            self.run_check([RuntimeError("boom"), None])
+        except Exception as exc:
+            self.fail(f"한 건 실패가 실행 전체를 중단시킴: {exc}")
+
+    def test_a_none_title_cannot_crash_the_log_line(self):
+        """The crosspost branch logs the title directly — None killed it."""
+        self.items[0]["title"] = None
+        self.items[0]["is_crosspost"] = True
+        routed, _ = self.run_check([None])
+
+        # The crosspost is skipped, so only the second notice is routed —
+        # reaching it at all means the log line survived the None.
+        self.assertEqual(len(routed.call_args_list), 1)
+        self.assertIs(routed.call_args.args[1], self.items[1])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
