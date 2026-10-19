@@ -191,12 +191,6 @@ BOARDS = [
     # sites actually serve, each verified for 10+ listed items, dated rows
     # and a matching body selector before being added.
     {
-        "id": "career",
-        "name": "취·창업처 정보게시판",
-        "url": "https://career.catholic.ac.kr/career/board/news.do",
-        "group": "career",
-    },
-    {
         # OIA runs five boards. The other four carry 외국인 입학 and inbound
         # exchange material; only this one carries 파견 — 교환학생 오리엔테이션
         # and overseas scholarship calls, which is what a Korean undergraduate
@@ -219,3 +213,17 @@ BOARDS = [
 ]
 
 BOARDS_BY_ID = {b["id"]: b for b in BOARDS}
+
+# Boards that were monitored and are not any more. Their notices stay in the
+# database forever, so an alert or digest can still have to name one — and a
+# bare "career" tells the reader nothing. Keep the display name here when a
+# board is dropped from BOARDS.
+#
+# career: retired 2026-10-20. Overnight on 10-19 the school replaced
+# career.catholic.ac.kr with a different platform. Its board is now
+# /Career/WorkData/Notice/List.aspx, which 302s to /main/Login.aspx, and
+# that host serves "Disallow: /" for every agent. Login-walled and
+# robots-excluded, so there is nothing to re-point the board at.
+RETIRED_BOARDS = {
+    "career": "취·창업처 정보게시판 (운영 중단)",
+}

@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 import requests
 
 from . import db
-from .config import BOARDS_BY_ID
+from .config import BOARDS_BY_ID, RETIRED_BOARDS
 
 REMINDER_KINDS = (("D-7", 7), ("D-3", 3), ("D-1", 1))
 LOW_CONFIDENCE = 0.5
@@ -24,12 +24,17 @@ def _board_name(item: dict) -> str:
     """Human board name, falling back to the id only if it is unknown.
 
     Rows read straight from the database carry board_id but no display name,
-    and "dorm_f_inout" in an alert tells the reader nothing.
+    and "dorm_f_inout" in an alert tells the reader nothing. Retired boards
+    are looked up too: their notices outlive the board, so a digest or
+    reminder can still have to name one after it left BOARDS.
     """
     if item.get("board_name"):
         return item["board_name"]
-    board = BOARDS_BY_ID.get(item.get("board_id") or "")
-    return board["name"] if board else (item.get("board_id") or "")
+    board_id = item.get("board_id") or ""
+    board = BOARDS_BY_ID.get(board_id)
+    if board:
+        return board["name"]
+    return RETIRED_BOARDS.get(board_id, board_id)
 
 
 def esc(text: str) -> str:

@@ -17,6 +17,7 @@ import os
 import urllib.request
 
 from . import db
+from .config import RETIRED_BOARDS
 
 PING_TIMEOUT = 10
 FAILURE_STREAK = 3  # consecutive failed runs before the channel is told
@@ -55,6 +56,23 @@ def ping(state: str = "success", env: str = CHECK_URL_ENV, log=print) -> bool:
         return False
 
 
+def _logged_boards(con) -> list:
+    """Board ids in crawl_log, minus the ones we deliberately stopped watching.
+
+    A retired board keeps its crawl_log rows, and a board is usually retired
+    *because* it broke — so its last runs are failures and they stay the
+    newest rows forever. Without this filter the retired board would read as
+    currently failing for the rest of the bot's life, and would alert again
+    the moment its warned flag was cleared.
+
+    Only RETIRED_BOARDS is excluded, not "everything missing from BOARDS": an
+    unknown id in crawl_log is an anomaly worth surfacing, not something to
+    hide.
+    """
+    return [r[0] for r in con.execute("SELECT DISTINCT board_id FROM crawl_log")
+            if r[0] not in RETIRED_BOARDS]
+
+
 def failing_boards(con, streak: int = FAILURE_STREAK) -> list:
     """Boards whose last `streak` runs all failed.
 
@@ -62,10 +80,7 @@ def failing_boards(con, streak: int = FAILURE_STREAK) -> list:
     broken board is reported while the other seven keep working.
     """
     out = []
-    board_ids = [r[0] for r in con.execute(
-        "SELECT DISTINCT board_id FROM crawl_log")]
-
-    for board_id in board_ids:
+    for board_id in _logged_boards(con):
         # Ordered by rowid, not ran_at: the timestamp has second granularity,
         # so runs landing in the same second sort arbitrarily and a recovery
         # could be read as still-failing. Insertion order is monotonic.
@@ -98,8 +113,7 @@ def clear_warning(con, board_id: str) -> None:
 def new_failures(con, streak: int = FAILURE_STREAK) -> list:
     """Boards that just crossed the failure threshold and were not yet told."""
     failing = failing_boards(con, streak)
-    for board_id in [r[0] for r in con.execute(
-            "SELECT DISTINCT board_id FROM crawl_log")]:
+    for board_id in _logged_boards(con):
         if board_id not in failing:
             clear_warning(con, board_id)
     return [b for b in failing if not already_warned(con, b)]
