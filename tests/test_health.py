@@ -10,7 +10,8 @@ from unittest import mock
 
 import support  # noqa: F401
 
-from cuk_bot import cli, collector, db, health, notifier  # noqa: E402
+from cuk_bot import (cli, collector, config, db, health,  # noqa: E402
+                     notifier)
 from support import days_out  # noqa: E402
 
 LISTING = ('<table><tr><td><a href="?mode=view&articleNo=1">모집 공고</a></td>'
@@ -174,6 +175,47 @@ class Heartbeat(unittest.TestCase):
         self.assertIn("오늘 새 공지 없음", text)
         self.assertIn("8/8", text)
         self.assertIn("문제가 생긴 것", text)
+
+
+class RetiredBoardStopsBeingReported(unittest.TestCase):
+    """A board we stopped watching must not keep raising the alarm.
+
+    A board is retired *because* it broke, so its crawl_log tail is all
+    failures and stays the newest rows forever. Left in the scan it would
+    read as currently failing for the rest of the bot's life.
+    """
+
+    def setUp(self):
+        self.con = db.connect(":memory:")
+        self.board = {"id": "gone", "name": "사라진 게시판",
+                      "url": "http://x/gone.do"}
+        for _ in range(health.FAILURE_STREAK):
+            with mock.patch.object(collector, "http_get",
+                                   return_value=EMPTY_LISTING):
+                collector.collect_board(self.con, self.board,
+                                        log=lambda _: None)
+
+    def test_it_is_failing_while_still_monitored(self):
+        self.assertEqual(health.failing_boards(self.con), ["gone"])
+
+    def test_retiring_it_takes_it_out_of_the_failure_scan(self):
+        with mock.patch.dict(config.RETIRED_BOARDS, {"gone": "사라진"}):
+            self.assertEqual(health.failing_boards(self.con), [])
+            self.assertEqual(health.new_failures(self.con), [])
+
+    def test_an_unknown_id_is_still_reported(self):
+        """Only explicit retirement hides a board, not absence from BOARDS."""
+        self.assertNotIn("gone", config.BOARDS_BY_ID)
+        self.assertEqual(health.new_failures(self.con), ["gone"])
+
+    def test_a_retired_board_keeps_its_name_in_messages(self):
+        """Its notices outlive it, so a digest can still have to name it."""
+        with mock.patch.dict(config.RETIRED_BOARDS, {"gone": "사라진 게시판"}):
+            text = notifier.format_unjudged(
+                [{"board_id": "gone", "title": "공지", "url": "http://x/1"}],
+                "한도 소진")
+        self.assertIn("사라진 게시판", text)
+        self.assertNotIn("<i>gone</i>", text)
 
 
 class OneBadNoticeDoesNotEndTheRun(unittest.TestCase):

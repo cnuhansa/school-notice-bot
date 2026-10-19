@@ -25,11 +25,14 @@
 필요해지면 `BOARDS` 에 추가한다. URL 패턴은 동일할 것으로 보이나 검증하지 않았다.
 
 - 학과 소식 `french.catholic.ac.kr/french/community/news.do`
-- 취·창업처 `career.catholic.ac.kr`
 - 국제교류처 `oia.catholic.ac.kr` — 프랑스어 전공 특성상 가치 높음
 - 학부대학 `catholic-college.catholic.ac.kr` — 1학년인 경우
 
-게시판을 추가하면 [CHANNEL_NOTICE.md](CHANNEL_NOTICE.md) 의 목록도 함께 고친다.
+게시판을 추가·제거하면 [CHANNEL_NOTICE.md](CHANNEL_NOTICE.md) 의 목록도 함께 고친다.
+
+### 제외된 게시판
+
+- **취·창업처** `career.catholic.ac.kr` — 2026-10-19 플랫폼 교체로 운영 중단. 새 게시판(`/Career/WorkData/Notice/List.aspx`)은 로그인 페이지로 302 리다이렉트되고, 해당 호스트 `robots.txt` 가 `Disallow: /` 다. 두 조건이 풀리지 않는 한 재추가 불가.
 
 ## 2차 범위로 미룬 것 (원본 명세서 §2)
 

@@ -129,6 +129,15 @@ python tools/m1_probe.py --board <id> --diagnose
 
 `--diagnose` 는 본문 후보 컨테이너를 다시 순위 매긴다. 학교가 마크업을 바꿨다면 여기서 새 셀렉터가 보인다. `cuk_bot/parser.py` 의 `BODY_SELECTOR` 를 고치고 `docs/M1_RESULT.md` 를 갱신한다.
 
+사이트가 다시 찾아지지 않거나(404) 로그인형으로 바뀌었다면 셀렉터 문제가 아니다. 그럴 땐 **게시판을 은퇴시킨다**:
+
+1. `cuk_bot/config.py` 의 `BOARDS` 에서 해당 항목을 지운다
+2. 같은 파일 `RETIRED_BOARDS` 에 `"<id>": "<표시이름> (운영 중단)"` 을 넣는다
+3. [CHANNEL_NOTICE.md](CHANNEL_NOTICE.md) 의 게시판 개수·목록을 고치고, 고정 공지(`message_id: 9`)를 `editMessageText` 로 갱신한다
+4. 채널에 변경 사실을 한 번 알린다
+
+2번을 생략하면 두 가지가 깨진다. 은퇴한 게시판은 `crawl_log` 에 실패 기록을 남긴 상태로 멈추는데, 그 기록이 영원히 가장 최신 행으로 남아 **상시 연속 실패로 집힌다**(`health._logged_boards` 가 `RETIRED_BOARDS` 만 걸러낸다). 또 그 게시판에서 이미 수집한 공지는 DB에 남아 다이제스트·리마인더에 나올 수 있어, 표시이름이 없으면 `career` 같은 내부 id 가 그대로 노출된다.
+
 ### "판정 없이 전달" 알림이 계속 온다
 
 무료 한도가 모두 소진된 상태다. 정상 동작이며 데이터 손실은 없다.
