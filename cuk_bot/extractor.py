@@ -23,6 +23,11 @@ from .quota import QuotaExhausted, classify_quota_error, is_quota_error
 MAX_THROTTLE_WAIT = 90
 MAX_THROTTLE_RETRIES = 2
 
+# A demand spike often clears within seconds, so one short pause is worth it
+# before giving the notice to the next model.
+OVERLOAD_WAIT = 5
+MAX_OVERLOAD_RETRIES = 1
+
 
 class ExtractionError(RuntimeError):
     pass
@@ -35,6 +40,15 @@ class ModelUnavailable(RuntimeError):
 
     gemini-2.5-* retires 2026-10-16, so this has to be survivable: the caller
     moves to the next model in the chain instead of failing the notice.
+    """
+
+
+class ModelBusy(RuntimeError):
+    """The model is overloaded (500/503) and stayed so after a short wait.
+
+    Temporary and per model, so the caller moves to the next model in the
+    chain. On 2026-11-03 two notices went out unjudged on a single 503 while
+    four other models had allowance left.
     """
 
 
@@ -59,6 +73,14 @@ def _is_invalid_argument(exc) -> bool:
 def _is_missing_model(exc) -> bool:
     text = str(exc).upper()
     return getattr(exc, "code", None) == 404 or "NOT_FOUND" in text
+
+
+def _is_overloaded(exc) -> bool:
+    # No bare "503" text match: a 429 body says "retry in 13.503542s".
+    if is_quota_error(exc):
+        return False
+    return (getattr(exc, "code", None) in (500, 503)
+            or "UNAVAILABLE" in str(exc).upper())
 
 
 def _is_credential_rejected(exc) -> bool:
@@ -100,7 +122,8 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
 
     Raises QuotaExhausted when the free allowance is gone, and
     ModelUnavailable when the model itself is gone, so the caller can move to
-    the next model, and CredentialRejected when the credential is refused, so
+    the next model — ModelBusy likewise when it stays overloaded — and
+    CredentialRejected when the credential is refused, so
     it can move to the next credential. Any other failure raises ExtractionError and only affects
     this one notice.
     """
@@ -117,6 +140,7 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
 
     last_error = None
     throttles = 0
+    overloads = 0
     for attempt in (1, 2, 3, 4):
         try:
             resp = client.models.generate_content(
@@ -135,6 +159,14 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
 
             if _is_credential_rejected(exc):
                 raise CredentialRejected(brief_error(exc)) from exc
+
+            if _is_overloaded(exc):
+                if overloads >= MAX_OVERLOAD_RETRIES:
+                    raise ModelBusy(f"{name} 일시 과부하 "
+                                    f"({brief_error(exc)})") from exc
+                overloads += 1
+                time.sleep(OVERLOAD_WAIT)
+                continue
 
             # Newer families require reasoning. Learn that and retry once
             # with a budget large enough that the JSON is not truncated.

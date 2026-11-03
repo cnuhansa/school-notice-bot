@@ -146,7 +146,7 @@ python tools/m1_probe.py --board <id> --diagnose
 python -m cuk_bot --status          # 모델별 잔여 확인
 ```
 
-한도가 아니라 키 문제라면 `--status` 의 `자격증명:` 줄이 알려준다. 사유 줄이 `API 403 PERMISSION_DENIED` 이면 두 자격증명이 모두 거부된 것이다(Vertex 결제·IAM, AI Studio 키).
+한도가 아니라 키 문제라면 `--status` 의 `자격증명:` 줄이 알려준다. 사유 줄이 `API 403 PERMISSION_DENIED` 이면 두 자격증명이 모두 거부된 것이다(Vertex 결제·IAM, AI Studio 키). `모든 모델 일시 과부하` 이면 Gemini 쪽 수요 급증이다. 모델 하나가 500·503 을 내면 5초 뒤 1회 재시도하고, 그래도 안 되면 다음 모델로 넘어간다. 체인 전체가 막힌 경우에만 이 사유가 나온다.
 
 원인을 해결한 뒤 **Actions → `reextract` 워크플로를 수동 실행**한다. 판정 없이 전달된 공지만 다시 판정하고, 신청 공지로 판정되면 그때 알림을 보내고 리마인더를 예약한다. 나머지는 다음 다이제스트로 간다.
 

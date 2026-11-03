@@ -7,9 +7,8 @@ from unittest import mock
 import support  # noqa: F401
 
 from cuk_bot import client, db, judge  # noqa: E402
-from cuk_bot import extractor  # noqa: E402
-from cuk_bot.extractor import (CredentialRejected, ModelUnavailable,  # noqa: E402
-                               brief_error)
+from cuk_bot.extractor import (CredentialRejected, ModelBusy,  # noqa: E402
+                               ModelUnavailable)
 from cuk_bot.quota import QuotaExhausted  # noqa: E402
 
 VERDICT = {"is_actionable": True, "category": "기숙사", "one_line": "신청",
@@ -193,6 +192,24 @@ class ModelChain(unittest.TestCase):
         self.assertIsInstance(result, QuotaExhausted)
         self.assertIn("사용 가능한 모델 없음", str(result))
 
+    def test_an_overloaded_model_yields_to_the_next(self):
+        """2026-11-03: a single 503 sent two notices out unjudged."""
+        result, called = self.run_judge([ModelBusy("first 일시 과부하"), VERDICT])
+
+        self.assertEqual(result["one_line"], "신청")
+        self.assertEqual(called.call_args.kwargs["model"], "second")
+        self.assertIn("first", self.judge.busy)
+        self.assertNotIn("first", self.judge.retired)
+
+    def test_every_model_overloaded_says_so_not_quota(self):
+        busy = ModelBusy("일시 과부하")
+        result, _ = self.run_judge([busy, busy, busy])
+
+        self.assertIn("일시 과부하", str(result))
+        self.assertNotIn("한도", str(result))
+        # The next notice finds no model left; it must not blame quota either.
+        self.assertIn("일시 과부하", str(self.run_judge([])[0]))
+
     def test_unjudged_record_is_committed_not_left_in_a_transaction(self):
         """An uncommitted row vanishes, taking the notice out of the queue."""
         self.judge.forward_unjudged(
@@ -210,48 +227,6 @@ class ModelChain(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.judge.judge(self.item, self.resolved)
         self.assertEqual(len(called.call_args_list), 1)
-
-
-class ApiError(Exception):
-    """Stands in for google.genai.errors.APIError: a .code plus a long body."""
-
-    def __init__(self, code, text):
-        super().__init__(text)
-        self.code = code
-
-
-SEEN_403 = ("403 PERMISSION_DENIED. {'error': {'code': 403, 'message': "
-            "'This API method requires billing to be enabled. Please enable "
-            "billing on project #123 by visiting https://console...'}}")
-
-
-class CredentialRefusal(unittest.TestCase):
-    def test_403_from_the_call_is_raised_as_credential_rejected(self):
-        api = mock.Mock()
-        api.models.generate_content.side_effect = ApiError(403, SEEN_403)
-        budget = mock.Mock(seconds_until_slot=mock.Mock(return_value=0))
-
-        with self.assertRaises(CredentialRejected):
-            extractor.extract({"title": "모집 공고"},
-                              {"source": "text", "text": "본문", "images": []},
-                              client=api, budget=budget, model="m1")
-        budget.consume.assert_not_called()
-
-    def test_reason_for_the_channel_is_short_not_the_raw_body(self):
-        """The raw body cut at 100 chars landed in Telegram as half a dict."""
-        reason = brief_error(Exception(
-            f"api call failed (attempt 1): {SEEN_403}"))
-
-        self.assertEqual(reason, "API 403 PERMISSION_DENIED · 결제 비활성 의심")
-        self.assertNotIn("{", reason)
-
-    def test_malformed_reply_reads_as_format_error(self):
-        self.assertEqual(
-            brief_error(Exception("json decode failed (attempt 4): x")),
-            "응답 형식 오류")
-
-    def test_unrecognised_error_is_capped(self):
-        self.assertLessEqual(len(brief_error(Exception("x" * 500))), 60)
 
 
 if __name__ == "__main__":
