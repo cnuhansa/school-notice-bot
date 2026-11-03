@@ -180,6 +180,50 @@ class MonthCatchup(unittest.TestCase):
             (digest.CATCHUP_FLAG,)).fetchone())
 
 
+class UnjudgedReextract(unittest.TestCase):
+    """--reextract --unjudged grades only what went out without a verdict.
+
+    Plain --reextract also picks up every backfilled notice — 209 on
+    2026-11-03 — which would spend days of allowance and flood the digest.
+    """
+
+    def setUp(self):
+        self.con = db.connect(":memory:")
+        for no in ("1", "2", "3"):
+            self.con.execute("INSERT INTO notices (board_id, article_no, title,"
+                             " url) VALUES ('main_notice',?,'공지','http://x')",
+                             (no,))
+        db.mark_unjudged(self.con, "main_notice", "1", "추출 실패: API 403")
+        # "3" is backfilled: seen, never judged, never forwarded.
+        self.con.commit()
+
+    def test_only_forwarded_unjudged_notices_are_targets(self):
+        self.assertEqual(db.pending_unjudged(self.con),
+                         [{"board_id": "main_notice", "article_no": "1"}])
+        self.assertEqual(len(db.pending_extraction(self.con)), 3)
+
+    def test_a_notice_judged_since_is_not_graded_twice(self):
+        db.save_extraction(self.con, "main_notice", "1",
+                           {"is_actionable": False, "confidence": 0.9}, "text")
+        self.assertEqual(db.pending_unjudged(self.con), [])
+
+    def test_unjudged_run_sends_the_alert_it_owed(self):
+        with mock.patch.object(cli, "Judge"), \
+                mock.patch.object(cli, "_extract_and_route") as route:
+            cli.cmd_reextract(self.con, unjudged=True, notify=True,
+                              log=lambda *_: None)
+
+        self.assertEqual([c.args[1]["article_no"] for c in route.call_args_list],
+                         ["1"])
+        self.assertTrue(route.call_args.kwargs["notify"])
+
+    def test_plain_reextract_stays_silent(self):
+        with mock.patch.object(cli, "Judge"), \
+                mock.patch.object(cli, "_extract_and_route") as route:
+            cli.cmd_reextract(self.con, log=lambda *_: None)
+        self.assertFalse(route.call_args.kwargs["notify"])
+
+
 class SchemaMigration(unittest.TestCase):
     """A database carried forward must gain new columns, not break.
 

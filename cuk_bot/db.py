@@ -220,6 +220,21 @@ def mark_unjudged(con, board_id: str, article_no: str, reason: str) -> None:
         "noticed_at) VALUES (?,?,?,?)", (board_id, article_no, reason, now()))
 
 
+def pending_unjudged(con) -> list:
+    """Notices forwarded unjudged that still have no verdict.
+
+    Narrower than pending_extraction(): that one also returns every notice
+    --backfill marked as seen (209 on 2026-11-03), and grading those would
+    spend days of allowance and flood the next digest.
+    """
+    return [dict(r) for r in con.execute(
+        "SELECT u.board_id, u.article_no FROM unjudged u "
+        "JOIN notices n ON n.board_id=u.board_id AND n.article_no=u.article_no "
+        "LEFT JOIN extractions e ON e.board_id=u.board_id "
+        "  AND e.article_no=u.article_no "
+        "WHERE e.article_no IS NULL ORDER BY u.noticed_at")]
+
+
 def mark_unjudged_alerted(con, rows: list) -> None:
     for row in rows:
         con.execute(

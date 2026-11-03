@@ -7,7 +7,9 @@ from unittest import mock
 import support  # noqa: F401
 
 from cuk_bot import client, db, judge  # noqa: E402
-from cuk_bot.extractor import ModelUnavailable  # noqa: E402
+from cuk_bot import extractor  # noqa: E402
+from cuk_bot.extractor import (CredentialRejected, ModelUnavailable,  # noqa: E402
+                               brief_error)
 from cuk_bot.quota import QuotaExhausted  # noqa: E402
 
 VERDICT = {"is_actionable": True, "category": "기숙사", "one_line": "신청",
@@ -76,6 +78,47 @@ class CredentialChain(unittest.TestCase):
             j = judge.Judge(self.con, models=["m1"])
             with self.assertRaises(client.CredentialError):
                 j.client
+
+    def _judge_with(self, refuse):
+        """Judge over both credentials; `refuse` names those whose calls 403."""
+        clients = {client.VERTEX: mock.Mock(), client.STUDIO: mock.Mock()}
+
+        def fake_extract(item, resolved, client, budget, model):
+            for kind in refuse:
+                if client is clients[kind]:
+                    raise CredentialRejected("API 403 PERMISSION_DENIED")
+            return VERDICT
+
+        with mock.patch.dict(os.environ, {
+                "CUK_VERTEX_CREDENTIALS_JSON": "{}",
+                "GEMINI_API_KEY": "AIzaTest"}, clear=True):
+            j = judge.Judge(self.con, models=["m1", "m2"])
+        with mock.patch.object(judge, "build", side_effect=clients.get), \
+                mock.patch.object(judge, "extract",
+                                  side_effect=fake_extract) as called:
+            try:
+                result = j.judge({"title": "t"}, {"source": "text"})
+            except QuotaExhausted as exc:
+                result = exc
+        return j, result, called
+
+    def test_vertex_refused_at_call_time_hands_over_to_studio(self):
+        """2026-10-29: Vertex returned 403 on every call. Build succeeded, so
+        the old fallback never fired and 15 notices went out unjudged."""
+        j, result, called = self._judge_with(refuse=[client.VERTEX])
+
+        self.assertEqual(result["one_line"], "신청")
+        self.assertEqual(j._credentials, [client.STUDIO])
+        self.assertTrue(any("vertex 거부" in d for d in j.dropped))
+        self.assertEqual([c.kwargs["model"] for c in called.call_args_list],
+                         ["m1", "m1"], "같은 모델로 다음 자격증명에서 재시도")
+
+    def test_every_credential_refused_still_fails_open_with_reason(self):
+        j, result, _ = self._judge_with(refuse=[client.VERTEX, client.STUDIO])
+
+        self.assertIsInstance(result, QuotaExhausted)
+        self.assertIn("vertex 거부", str(result))
+        self.assertIn("studio 거부", str(result))
 
     def test_a_built_client_is_reused_not_rebuilt(self):
         j = judge.Judge(self.con, models=["m1"])
@@ -167,6 +210,48 @@ class ModelChain(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.judge.judge(self.item, self.resolved)
         self.assertEqual(len(called.call_args_list), 1)
+
+
+class ApiError(Exception):
+    """Stands in for google.genai.errors.APIError: a .code plus a long body."""
+
+    def __init__(self, code, text):
+        super().__init__(text)
+        self.code = code
+
+
+SEEN_403 = ("403 PERMISSION_DENIED. {'error': {'code': 403, 'message': "
+            "'This API method requires billing to be enabled. Please enable "
+            "billing on project #123 by visiting https://console...'}}")
+
+
+class CredentialRefusal(unittest.TestCase):
+    def test_403_from_the_call_is_raised_as_credential_rejected(self):
+        api = mock.Mock()
+        api.models.generate_content.side_effect = ApiError(403, SEEN_403)
+        budget = mock.Mock(seconds_until_slot=mock.Mock(return_value=0))
+
+        with self.assertRaises(CredentialRejected):
+            extractor.extract({"title": "모집 공고"},
+                              {"source": "text", "text": "본문", "images": []},
+                              client=api, budget=budget, model="m1")
+        budget.consume.assert_not_called()
+
+    def test_reason_for_the_channel_is_short_not_the_raw_body(self):
+        """The raw body cut at 100 chars landed in Telegram as half a dict."""
+        reason = brief_error(Exception(
+            f"api call failed (attempt 1): {SEEN_403}"))
+
+        self.assertEqual(reason, "API 403 PERMISSION_DENIED · 결제 비활성 의심")
+        self.assertNotIn("{", reason)
+
+    def test_malformed_reply_reads_as_format_error(self):
+        self.assertEqual(
+            brief_error(Exception("json decode failed (attempt 4): x")),
+            "응답 형식 오류")
+
+    def test_unrecognised_error_is_capped(self):
+        self.assertLessEqual(len(brief_error(Exception("x" * 500))), 60)
 
 
 if __name__ == "__main__":

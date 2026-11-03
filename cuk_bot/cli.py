@@ -5,6 +5,7 @@
   python -m cuk_bot --check       새 글 수집 + 추출 + 즉시 알림
   python -m cuk_bot --digest      다이제스트 + 리마인더 발송
   python -m cuk_bot --reextract   저장된 본문으로 재추출 (프롬프트 튜닝용)
+  python -m cuk_bot --reextract --unjudged  판정 없이 전달된 공지만 재판정
   python -m cuk_bot --status      수집 상태와 파싱 실패 이력
   python -m cuk_bot --renormalize 판정 규칙 재적용 (API 미사용)
 """
@@ -21,7 +22,7 @@ from .collector import collect
 from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
                      MODEL_CHAIN, NOTIFY_WHEN_UNJUDGED, READ_IMAGES)
 from .content import resolve
-from .extractor import normalize
+from .extractor import brief_error, normalize
 from .judge import Judge
 from .quota import QuotaExhausted, RequestBudget
 
@@ -54,9 +55,11 @@ def _extract_and_route(con, item, session, notify=True, log=print):
         log(f"  ⚠ 한도 소진 — 판정 없이 전달: {_title(item)[:40]}")
         return None
     except Exception as exc:
-        session.forward_unjudged(item, f"추출 실패: {str(exc)[:100]}")
+        # The channel gets a short reason; the full SDK error goes to the run
+        # log, which is the only place it can be diagnosed from.
+        session.forward_unjudged(item, f"추출 실패: {brief_error(exc)}")
         log(f"  ⚠ 추출 실패 — 판정 없이 전달 ({_title(item)[:30]}): "
-            f"{str(exc)[:80]}")
+            f"{str(exc)[:400]}")
         return None
 
     db.clear_unjudged(con, item["board_id"], item["article_no"])
@@ -95,6 +98,16 @@ def _flush_unjudged(con, session, notify=True, log=print):
         db.mark_unjudged_alerted(con, session.unjudged)
         con.commit()
     log(f"  ⚠ 미판정 {len(session.unjudged)}건 전달 완료")
+
+
+def _report_credential_switch(session, log=print):
+    """Say in the run log that a credential was dropped and why.
+
+    The handover keeps judging alive, which also hides the cause — a billed
+    project quietly refusing is otherwise invisible until someone reads code.
+    """
+    for note in session.dropped:
+        log(f"  [!] 자격증명 전환 — {note} → 남은 자격증명: {session.credential()}")
 
 
 def _report_board_failures(con, notify=True, log=print):
@@ -139,9 +152,10 @@ def cmd_check(con, notify=True, log=print):
                 _extract_and_route(con, item, session, notify=notify, log=log)
             except Exception as exc:
                 log(f"  [!] 처리 실패 — 판정 없이 전달 "
-                    f"({_title(item)[:30]}): {str(exc)[:80]}")
-                session.forward_unjudged(item, f"처리 실패: {str(exc)[:100]}")
+                    f"({_title(item)[:30]}): {str(exc)[:400]}")
+                session.forward_unjudged(item, f"처리 실패: {brief_error(exc)}")
 
+        _report_credential_switch(session, log=log)
         _flush_unjudged(con, session, notify=notify, log=log)
         _report_board_failures(con, notify=notify, log=log)
         con.commit()
@@ -157,13 +171,17 @@ def cmd_digest(con, notify=True, log=print):
     digest.run(con, notify=notify, log=log)
 
 
-def cmd_reextract(con, only_missing=True, log=print):
+def cmd_reextract(con, only_missing=True, unjudged=False, notify=False,
+                  log=print):
     """Re-run extraction on stored bodies — no crawling, no re-download.
 
     This is what makes prompt tuning cheap: change the prompt, re-grade the
-    same sample, compare.
+    same sample, compare. With `unjudged`, only notices that went out without
+    a verdict are graded, and an actionable one finally gets its real alert.
     """
-    if only_missing:
+    if unjudged:
+        targets = db.pending_unjudged(con)
+    elif only_missing:
         targets = db.pending_extraction(con)
     else:
         targets = [dict(r) for r in con.execute(
@@ -179,8 +197,9 @@ def cmd_reextract(con, only_missing=True, log=print):
             continue
         board = BOARDS_BY_ID.get(item["board_id"])
         item["board_name"] = board["name"] if board else item["board_id"]
-        _extract_and_route(con, item, session, notify=False, log=log)
+        _extract_and_route(con, item, session, notify=notify, log=log)
 
+    _report_credential_switch(session, log=log)
     con.commit()
     if session.unjudged:
         log(f"  ⚠ {len(session.unjudged)}건은 한도 소진으로 여전히 미판정 "
@@ -225,6 +244,8 @@ def main(argv=None):
     ap.add_argument("--reextract", action="store_true", help="저장 본문 재추출")
     ap.add_argument("--all", action="store_true",
                     help="--reextract 시 추출 완료분까지 다시")
+    ap.add_argument("--unjudged", action="store_true",
+                    help="--reextract 시 판정 없이 전달된 공지만 (신청 공지는 알림 발송)")
     ap.add_argument("--status", action="store_true", help="수집 상태 요약")
     ap.add_argument("--reset-quota", action="store_true",
                     help="오늘의 한도 소진 표시 해제")
@@ -246,7 +267,8 @@ def main(argv=None):
     elif args.digest:
         cmd_digest(con, notify=notify)
     elif args.reextract:
-        cmd_reextract(con, only_missing=not args.all)
+        cmd_reextract(con, only_missing=not args.all, unjudged=args.unjudged,
+                      notify=notify and args.unjudged)
     elif args.status:
         cmd_status(con)
     elif args.renormalize:

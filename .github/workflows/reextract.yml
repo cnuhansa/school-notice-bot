@@ -1,0 +1,56 @@
+name: reextract
+
+# 수동 전용. "판정 없이 전달"된 공지만 다시 판정한다.
+#
+# 로컬에서 돌리지 않는 이유: DB 는 check 가 30분마다 커밋하므로 로컬 실행분을
+# push 하면 충돌한다. 같은 concurrency 그룹으로 묶어 check 와 겹치지 않게 한다.
+#
+# 신청 공지로 판정되면 원래 받았어야 할 알림이 이때 나가고 리마인더가 예약된다.
+# 그 밖의 공지는 다음 08:00 다이제스트로 간다.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cuk-bot-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  reextract:
+    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 미판정 공지 재판정
+        env:
+          CUK_VERTEX_CREDENTIALS_JSON: ${{ secrets.CUK_VERTEX_CREDENTIALS_JSON }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m cuk_bot --reextract --unjudged
+
+      - name: 상태 저장 (DB 커밋)
+        run: |
+          git config user.name "cuk-notice-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git add -f cuk_notices.db
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 생략"
+            exit 0
+          fi
+          git commit -m "chore(state): 미판정 공지 재판정 반영 [skip ci]"
+          git push || {
+            echo "push 충돌 — rebase 후 1회 재시도"
+            git pull --rebase --autostash
+            git push
+          }
