@@ -52,7 +52,7 @@ def _extract_and_route(con, item, session, notify=True, log=print):
         data = session.judge(item, resolved)
     except QuotaExhausted as exc:
         session.forward_unjudged(item, str(exc))
-        log(f"  ⚠ 한도 소진 — 판정 없이 전달: {_title(item)[:40]}")
+        log(f"  ⚠ 판정 불가({exc}) — 판정 없이 전달: {_title(item)[:40]}")
         return None
     except Exception as exc:
         # The channel gets a short reason; the full SDK error goes to the run
@@ -202,8 +202,8 @@ def cmd_reextract(con, only_missing=True, unjudged=False, notify=False,
     _report_credential_switch(session, log=log)
     con.commit()
     if session.unjudged:
-        log(f"  ⚠ {len(session.unjudged)}건은 한도 소진으로 여전히 미판정 "
-            f"— 한도 회복 후 다시 실행하세요")
+        log(f"  ⚠ {len(session.unjudged)}건은 여전히 미판정({session.reason}) "
+            f"— 원인이 풀린 뒤 다시 실행하세요")
 
 
 def cmd_status(con, log=print):

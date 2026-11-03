@@ -13,7 +13,7 @@ does the bot stop judging — and even then it still notifies.
 from . import db
 from .config import (DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT, MODEL_CHAIN)
 from .client import CredentialError, available_credentials, build, label
-from .extractor import CredentialRejected, ModelUnavailable, extract
+from .extractor import CredentialRejected, ModelBusy, ModelUnavailable, extract
 from .quota import QuotaExhausted, RequestBudget
 
 
@@ -35,6 +35,7 @@ class Judge:
         self.dropped = []
         self._exhausted = set()
         self.retired = set()
+        self.busy = set()
 
     # ── resources ────────────────────────────────────────────
     @property
@@ -93,7 +94,7 @@ class Judge:
         """
         candidates = self.available()
         if not candidates:
-            raise QuotaExhausted("모든 모델의 무료 한도 소진", scope="day")
+            raise QuotaExhausted(self._none_left(), scope="day")
 
         last = None
         for name in candidates:
@@ -113,12 +114,28 @@ class Judge:
                 self._exhausted.add(name)
                 self.retired.add(name)
                 last = exc
+            except ModelBusy as exc:
+                # A demand spike is per model and passes on its own; skip
+                # the model for this run, the next run tries it again.
+                self._exhausted.add(name)
+                self.busy.add(name)
+                last = exc
 
         if isinstance(last, QuotaExhausted):
             raise last
-        raise QuotaExhausted(
-            f"사용 가능한 모델 없음 ({', '.join(sorted(self.retired)) or '원인 미상'})",
-            scope="day")
+        raise QuotaExhausted(self._none_left(), scope="day")
+
+    def _none_left(self) -> str:
+        """Why no model can judge, worded for the channel.
+
+        Saying "한도 소진" when every model was merely overloaded sends the
+        reader to check quotas that are fine.
+        """
+        if self.busy:
+            return "모든 모델 일시 과부하 — 다음 실행에서 다시 시도"
+        if self.retired:
+            return f"사용 가능한 모델 없음 ({', '.join(sorted(self.retired))})"
+        return "모든 모델의 무료 한도 소진"
 
     def _extract(self, item: dict, resolved: dict, name: str) -> dict:
         """One model, moving down the credentials while they are refused.
