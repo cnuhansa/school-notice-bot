@@ -168,7 +168,7 @@ def format_unjudged(items: list, reason: str) -> str:
                      f'{esc((item.get("title") or "")[:60])}</a>')
         if board:
             lines.append(f"  <i>{board}</i>")
-    lines += ["", "한도가 회복되면 <code>--reextract</code> 로 다시 판정합니다."]
+    lines += ["", "원인이 풀리면 <code>reextract</code> 워크플로로 다시 판정합니다."]
     return "\n".join(lines)
 
 

@@ -38,6 +38,14 @@ class ModelUnavailable(RuntimeError):
     """
 
 
+class CredentialRejected(RuntimeError):
+    """The credential itself was refused (401/403) — billing, IAM, revoked key.
+
+    Not a per-notice failure: every notice would hit the same wall, so the
+    caller moves to the next credential instead of forwarding unjudged.
+    """
+
+
 # Gemini 3.x rejects thinking_budget=0 with INVALID_ARGUMENT, while 2.5 needs
 # it disabled or reasoning eats the output budget. Which family a model
 # belongs to is discovered on first use rather than hardcoded, so a new model
@@ -52,9 +60,31 @@ def _is_missing_model(exc) -> bool:
     text = str(exc).upper()
     return getattr(exc, "code", None) == 404 or "NOT_FOUND" in text
 
-def _is_missing_model(exc) -> bool:
+
+def _is_credential_rejected(exc) -> bool:
     text = str(exc).upper()
-    return getattr(exc, "code", None) == 404 or "NOT_FOUND" in text
+    return (getattr(exc, "code", None) in (401, 403)
+            or "PERMISSION_DENIED" in text or "UNAUTHENTICATED" in text)
+
+
+_STATUS = re.compile(r"\b([45]\d\d) ([A-Z][A-Z_]{3,})\b")
+
+
+def brief_error(exc) -> str:
+    """A reason short enough to put in a Telegram message.
+
+    The SDK's str(exc) embeds the whole JSON error body. Cut at 100 chars it
+    landed in the channel as half a dict — noise to the reader, and still
+    too short to diagnose from. The full text belongs in the run log.
+    """
+    text = str(exc)
+    if "json decode failed" in text:
+        return "응답 형식 오류"
+    match = _STATUS.search(text)
+    if not match:
+        return text[:60]
+    hint = " · 결제 비활성 의심" if "BILLING" in text.upper() else ""
+    return f"API {match.group(1)} {match.group(2)}{hint}"
 
 
 def _parse_json(raw: str) -> dict:
@@ -70,7 +100,8 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
 
     Raises QuotaExhausted when the free allowance is gone, and
     ModelUnavailable when the model itself is gone, so the caller can move to
-    the next model. Any other failure raises ExtractionError and only affects
+    the next model, and CredentialRejected when the credential is refused, so
+    it can move to the next credential. Any other failure raises ExtractionError and only affects
     this one notice.
     """
     if budget is not None:
@@ -101,6 +132,9 @@ def extract(item: dict, resolved: dict, client=None, budget=None,
         except Exception as exc:
             if _is_missing_model(exc):
                 raise ModelUnavailable(f"{name} 사용 불가 (종료·오타·권한)")
+
+            if _is_credential_rejected(exc):
+                raise CredentialRejected(brief_error(exc)) from exc
 
             # Newer families require reasoning. Learn that and retry once
             # with a budget large enough that the JSON is not truncated.

@@ -13,7 +13,7 @@ does the bot stop judging — and even then it still notifies.
 from . import db
 from .config import (DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT, MODEL_CHAIN)
 from .client import CredentialError, available_credentials, build, label
-from .extractor import ModelUnavailable, extract
+from .extractor import CredentialRejected, ModelUnavailable, extract
 from .quota import QuotaExhausted, RequestBudget
 
 
@@ -53,7 +53,8 @@ class Judge:
                 return self._client
             except Exception as exc:
                 self._drop_credential(f"{kind} 사용 불가: {str(exc)[:70]}")
-        raise CredentialError("사용 가능한 자격증명 없음")
+        tried = f" ({'; '.join(self.dropped)})" if self.dropped else ""
+        raise CredentialError(f"사용 가능한 자격증명 없음{tried}")
 
     def _drop_credential(self, reason: str) -> None:
         """Move to the next credential. A dead one must not stall the run.
@@ -97,8 +98,7 @@ class Judge:
         last = None
         for name in candidates:
             try:
-                return extract(item, resolved, client=self.client,
-                               budget=self.budgets[name], model=name)
+                return self._extract(item, resolved, name)
             except CredentialError as exc:
                 # Building the client failed outright — nothing to retry here.
                 raise QuotaExhausted(f"자격증명 없음: {exc}", scope="day")
@@ -119,6 +119,23 @@ class Judge:
         raise QuotaExhausted(
             f"사용 가능한 모델 없음 ({', '.join(sorted(self.retired)) or '원인 미상'})",
             scope="day")
+
+    def _extract(self, item: dict, resolved: dict, name: str) -> dict:
+        """One model, moving down the credentials while they are refused.
+
+        A 403 at call time is the same failure as one at build time — billing
+        lapsed, key revoked — and must hand over the same way. From 2026-10-29
+        it surfaced only as a per-notice error instead, so a refused Vertex
+        project forwarded every notice unjudged while AI Studio sat unused.
+        Runs out by raising CredentialError from self.client.
+        """
+        while True:
+            kind = self._credentials[0] if self._credentials else "?"
+            try:
+                return extract(item, resolved, client=self.client,
+                               budget=self.budgets[name], model=name)
+            except CredentialRejected as exc:
+                self._drop_credential(f"{kind} 거부: {exc}")
 
     def forward_unjudged(self, item: dict, reason: str) -> None:
         """Give up on judging this notice, but never on surfacing it.
