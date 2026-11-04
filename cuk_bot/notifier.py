@@ -9,14 +9,13 @@ what gets a bot muted inside two weeks, which would defeat the whole point:
 """
 
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 import requests
 
 from . import db
 from .config import BOARDS_BY_ID, RETIRED_BOARDS
 
-REMINDER_KINDS = (("D-7", 7), ("D-3", 3), ("D-1", 1))
 LOW_CONFIDENCE = 0.5
 
 
@@ -54,12 +53,22 @@ def send(text: str, log=print) -> bool:
         log("  [!] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 미설정 — 발송 생략")
         return False
 
-    resp = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat, "text": text, "parse_mode": "HTML",
-              "disable_web_page_preview": False},
-        timeout=15,
-    )
+    # A dropped connection raises instead of returning a failed response. It
+    # used to escape from here, skip the outbox below, and abort routing for
+    # a notice that had already been judged — the alert was lost and its
+    # reminders never scheduled (2026-11-04, ConnectionResetError 104). A
+    # transport failure is a failed send like any other: report False so the
+    # caller parks the message and the next run retries it.
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat, "text": text, "parse_mode": "HTML",
+                  "disable_web_page_preview": False},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        log(f"  [!] 텔레그램 연결 실패: {str(exc)[:200]}")
+        return False
     if not resp.ok:
         log(f"  [!] 텔레그램 발송 실패: {resp.text[:200]}")
     return resp.ok
@@ -172,6 +181,25 @@ def format_unjudged(items: list, reason: str) -> str:
     return "\n".join(lines)
 
 
+def format_route_failure(item: dict, reason: str) -> str:
+    """A notice that was judged, then could not be stored or alerted.
+
+    Kept apart from format_unjudged on purpose. That message says the bot
+    could not judge and names reextract as the cure — both false here: the
+    verdict exists, and reextract skips any notice that has one.
+    """
+    return "\n".join([
+        "🛠 <b>알림 처리 실패</b>",
+        f"<i>{esc(reason)}</i>",
+        "",
+        "아래 공지는 판정까지 했지만 그 뒤 처리(저장·알림)에 실패했습니다. "
+        "원문을 직접 확인하세요.",
+        "",
+        f'• <a href="{item["url"]}">{esc((item.get("title") or "")[:60])}</a>',
+        f"  <i>{esc(_board_name(item))}</i>",
+    ])
+
+
 def format_catchup(rows: list, month: str) -> str:
     """One-off summary of the month's notices.
 
@@ -252,46 +280,3 @@ def format_digest(notices: list, reminders: list) -> str:
             lines.append(f'  마감 {esc(fmt_deadline(row["apply_end"]))} · '
                          f'<a href="{row["url"]}">바로가기</a>')
     return "\n".join(lines)
-
-
-def schedule_reminders(con, board_id: str, article_no: str, apply_end: str) -> int:
-    """Queue D-7/D-3/D-1. Dates already past are never scheduled."""
-    if not apply_end:
-        return 0
-    try:
-        due = datetime.fromisoformat(apply_end).date()
-    except (TypeError, ValueError):
-        return 0
-
-    queued = 0
-    for kind, days in REMINDER_KINDS:
-        when = due - timedelta(days=days)
-        if when >= date.today():
-            con.execute("INSERT OR IGNORE INTO reminders VALUES (?,?,?,?,NULL)",
-                        (board_id, article_no, when.isoformat(), kind))
-            queued += 1
-    con.commit()
-    return queued
-
-
-def due_reminders(con, on: str = None) -> list:
-    on = on or date.today().isoformat()
-    return [dict(r) for r in con.execute("""
-        SELECT r.kind, r.board_id, r.article_no, e.one_line, e.apply_end,
-               n.title, n.url
-        FROM reminders r
-        JOIN notices n ON n.board_id = r.board_id
-                      AND n.article_no = r.article_no
-        JOIN extractions e ON e.board_id = r.board_id
-                          AND e.article_no = r.article_no
-        WHERE r.due_date = ? AND r.sent_at IS NULL
-    """, (on,))]
-
-
-def mark_reminder_sent(con, row: dict) -> None:
-    con.execute(
-        "UPDATE reminders SET sent_at=? WHERE board_id=? AND article_no=? "
-        "AND kind=?",
-        (datetime.now().isoformat(timespec="seconds"),
-         row["board_id"], row["article_no"], row["kind"]),
-    )

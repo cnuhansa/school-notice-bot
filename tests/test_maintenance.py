@@ -12,7 +12,7 @@ from unittest import mock
 
 import support  # noqa: F401
 
-from cuk_bot import cli, db, digest, notifier  # noqa: E402
+from cuk_bot import cli, db, digest, notifier, reminders  # noqa: E402
 from support import days_out  # noqa: E402
 
 
@@ -32,7 +32,7 @@ class DigestPreview(unittest.TestCase):
                          "one_line, apply_end) VALUES ('b','1','한 줄', ?)",
                          (days_out(1),))
         db.queue_digest(self.con, "b", "1")
-        notifier.schedule_reminders(self.con, "b", "1", days_out(1))
+        reminders.schedule(self.con, "b", "1", days_out(1))
         self.con.commit()
 
     def pending(self):
