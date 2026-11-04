@@ -6,6 +6,7 @@
   python -m cuk_bot --digest      다이제스트 + 리마인더 발송
   python -m cuk_bot --reextract   저장된 본문으로 재추출 (프롬프트 튜닝용)
   python -m cuk_bot --reextract --unjudged  판정 없이 전달된 공지만 재판정
+  python -m cuk_bot --redeliver   판정됐지만 알림이 안 나간 공지 재전송
   python -m cuk_bot --status      수집 상태와 파싱 실패 이력
   python -m cuk_bot --renormalize 판정 규칙 재적용 (API 미사용)
 """
@@ -16,70 +17,18 @@ from datetime import date
 
 import json
 
-from . import db, digest, health, notifier, status
+from . import db, digest, health, notifier, route, status
 from .client import describe
 from .collector import collect
 from .config import (BOARDS_BY_ID, DAILY_REQUEST_LIMIT, MINUTE_REQUEST_LIMIT,
-                     MODEL_CHAIN, NOTIFY_WHEN_UNJUDGED, READ_IMAGES)
-from .content import resolve
+                     MODEL_CHAIN, NOTIFY_WHEN_UNJUDGED)
 from .extractor import brief_error, normalize
 from .judge import Judge
-from .quota import QuotaExhausted, RequestBudget
+from .quota import RequestBudget
 
-
-def _title(item: dict) -> str:
-    """A title that is always a string.
-
-    parse_detail can return None for a field it could not find, and a None
-    title used to crash the log line that reported the notice. The listing
-    is now authoritative so this should not happen — this keeps a future
-    regression from taking the run down with it.
-    """
-    return item.get("title") or "(제목 없음)"
-
-
-def _extract_and_route(con, item, session, notify=True, log=print):
-    """Extract one notice, then either alert immediately or queue a digest.
-
-    Every path that cannot produce a verdict — spent free tier, missing key,
-    API outage, unparseable response — forwards the notice unjudged. Silently
-    dropping one would reproduce the exact failure this bot was built to
-    prevent, so "couldn't judge" always still means "you get told".
-    """
-    resolved = resolve(item, allow_images=READ_IMAGES)
-
-    try:
-        data = session.judge(item, resolved)
-    except QuotaExhausted as exc:
-        session.forward_unjudged(item, str(exc))
-        log(f"  ⚠ 판정 불가({exc}) — 판정 없이 전달: {_title(item)[:40]}")
-        return None
-    except Exception as exc:
-        # The channel gets a short reason; the full SDK error goes to the run
-        # log, which is the only place it can be diagnosed from.
-        session.forward_unjudged(item, f"추출 실패: {brief_error(exc)}")
-        log(f"  ⚠ 추출 실패 — 판정 없이 전달 ({_title(item)[:30]}): "
-            f"{str(exc)[:400]}")
-        return None
-
-    db.clear_unjudged(con, item["board_id"], item["article_no"])
-    db.save_extraction(con, item["board_id"], item["article_no"], data,
-                       resolved["source"])
-
-    if data["is_actionable"]:
-        if notify:
-            notifier.send_or_queue(
-                con, notifier.format_alert(item, data), "alert", log=log)
-        queued = notifier.schedule_reminders(
-            con, item["board_id"], item["article_no"], data.get("apply_end"))
-        log(f"  🔔 {_title(item)[:44]} — 마감 "
-            f"{notifier.fmt_deadline(data.get('apply_end'))}, 리마인더 {queued}건")
-    else:
-        db.queue_digest(con, item["board_id"], item["article_no"])
-        log(f"  · 다이제스트 대기: {_title(item)[:44]}")
-
-    con.commit()
-    return data
+# Bound here so tests can patch the routing step on this module.
+_title = route.title
+_extract_and_route = route.extract_and_route
 
 
 def _flush_unjudged(con, session, notify=True, log=print):
@@ -142,14 +91,22 @@ def cmd_check(con, notify=True, log=print):
             # single unexpected value aborted cmd_check, so the remaining new
             # notices went unprocessed AND the DB commit step was skipped —
             # the next run then re-read the same notice and died again.
-            # Anything we cannot route is forwarded unjudged, which is the
-            # same promise the extraction path already makes.
+            # Anything we cannot judge is forwarded unjudged, which is the
+            # same promise the extraction path already makes. A notice that
+            # WAS judged must not be — see route.RouteFailed.
             try:
                 if item.get("is_crosspost"):
                     log(f"  [dup] 재게시로 판단해 건너뜀: {_title(item)[:44]}")
                     db.queue_digest(con, item["board_id"], item["article_no"])
                     continue
                 _extract_and_route(con, item, session, notify=notify, log=log)
+            except route.RouteFailed as exc:
+                log(f"  [!] 판정 후 처리 실패 ({_title(item)[:30]}): "
+                    f"{str(exc.__cause__)[:400]}")
+                if notify:
+                    notifier.send_or_queue(
+                        con, notifier.format_route_failure(item, str(exc)),
+                        "warning", log=log)
             except Exception as exc:
                 log(f"  [!] 처리 실패 — 판정 없이 전달 "
                     f"({_title(item)[:30]}): {str(exc)[:400]}")
@@ -246,6 +203,8 @@ def main(argv=None):
                     help="--reextract 시 추출 완료분까지 다시")
     ap.add_argument("--unjudged", action="store_true",
                     help="--reextract 시 판정 없이 전달된 공지만 (신청 공지는 알림 발송)")
+    ap.add_argument("--redeliver", action="store_true",
+                    help="판정은 됐는데 알림이 안 나간 공지 재전송 (API 미사용)")
     ap.add_argument("--status", action="store_true", help="수집 상태 요약")
     ap.add_argument("--reset-quota", action="store_true",
                     help="오늘의 한도 소진 표시 해제")
@@ -269,6 +228,8 @@ def main(argv=None):
     elif args.reextract:
         cmd_reextract(con, only_missing=not args.all, unjudged=args.unjudged,
                       notify=notify and args.unjudged)
+    elif args.redeliver:
+        route.redeliver(con, notify=notify)
     elif args.status:
         cmd_status(con)
     elif args.renormalize:
